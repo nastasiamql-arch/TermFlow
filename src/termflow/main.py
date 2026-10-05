@@ -7,7 +7,7 @@ from threading import Event
 
 import httpx
 from PySide6.QtCore import QObject, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -131,6 +131,9 @@ class SettingsDialog(QDialog):
         self.model.addItem(settings.model)
         self.timeout = QLineEdit(str(settings.timeout))
         self.retries = QLineEdit(str(settings.retries))
+        self.theme = QComboBox()
+        self.theme.addItems(["System", "Light", "Dark"])
+        self.theme.setCurrentText(settings.theme)
         self.startup = QCheckBox("Check for updates on startup")
         self.startup.setChecked(settings.check_updates_on_startup)
         self.remember = QPushButton("Save Settings")
@@ -149,6 +152,7 @@ class SettingsDialog(QDialog):
         form.addRow("Default Model", self.model)
         form.addRow("Timeout (seconds)", self.timeout)
         form.addRow("Retries", self.retries)
+        form.addRow("Theme", self.theme)
         form.addRow("", self.startup)
         row = QHBoxLayout()
         row.addWidget(self.test)
@@ -166,6 +170,7 @@ class SettingsDialog(QDialog):
         s.model = self.model.currentText().strip()
         s.timeout = int(self.timeout.text())
         s.retries = int(self.retries.text())
+        s.theme = self.theme.currentText()
         s.check_updates_on_startup = self.startup.isChecked()
         if self.key.text():
             store(s.provider, self.key.text())
@@ -274,6 +279,7 @@ class MainWindow(QMainWindow):
         update_action = help_menu.addAction("Check for Updates")
         update_action.triggered.connect(self.check_updates)
         self.settings = load_settings()
+        self.apply_theme()
         self.workflow = Workflow()
         self.source_path = ""
         self.vocab_path = ""
@@ -377,6 +383,25 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self.settings.show_welcome = not hide.isChecked()
         save_settings(self.settings)
+
+    def apply_theme(self):
+        app = QApplication.instance()
+        if self.settings.theme != "Dark":
+            app.setPalette(app.style().standardPalette())
+            return
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(37, 40, 46))
+        palette.setColor(QPalette.WindowText, QColor(235, 237, 240))
+        palette.setColor(QPalette.Base, QColor(27, 29, 34))
+        palette.setColor(QPalette.AlternateBase, QColor(45, 48, 55))
+        palette.setColor(QPalette.ToolTipBase, QColor(235, 237, 240))
+        palette.setColor(QPalette.ToolTipText, QColor(27, 29, 34))
+        palette.setColor(QPalette.Text, QColor(235, 237, 240))
+        palette.setColor(QPalette.Button, QColor(52, 56, 64))
+        palette.setColor(QPalette.ButtonText, QColor(235, 237, 240))
+        palette.setColor(QPalette.Highlight, QColor(62, 128, 210))
+        palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+        app.setPalette(palette)
 
     def open_source(self):
         p, _ = QFileDialog.getOpenFileName(self, "Open SOURCE", "", "Text files (*.txt *.md);;All files (*)")
@@ -691,6 +716,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self, self.settings)
         if dialog.exec():
             self.settings = load_settings()
+            self.apply_theme()
 
     def prompt_manager(self):
         dialog = PromptManagerDialog(self)
