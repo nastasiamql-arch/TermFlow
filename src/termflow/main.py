@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Event
 
 import httpx
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -45,6 +47,16 @@ from termflow.core.state_machine import State
 from termflow.core.workflow import Workflow
 from termflow.storage.credentials import delete, get, store
 from termflow.storage.paths import APPDATA, LOCAL
+from termflow.storage.profiles import (
+    FileSnapshot,
+    create_profile,
+    delete_profile,
+    file_snapshot,
+    load_profiles,
+    save_profiles,
+    set_active_profile,
+    update_profile,
+)
 from termflow.storage.settings import load_settings, save_settings
 from termflow.ui.prompt_manager import PromptManagerDialog
 from termflow.ui.search_conflicts import ConflictResolutionDialog
@@ -117,6 +129,80 @@ class DownloadWorker(QObject):
             self.failed.emit("Download cancelled")
         except Exception as e:
             self.failed.emit(str(e))
+
+
+class NovelProfileDialog(QDialog):
+    def __init__(self, parent, active_profile_id):
+        super().__init__(parent)
+        self.setWindowTitle("โปรไฟล์นิยาย")
+        self.setMinimumWidth(420)
+        self.selected_profile_id = active_profile_id
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("เลือกโปรไฟล์เพื่อเปิดไฟล์และการตั้งค่าของแต่ละเรื่อง"))
+        self.list = QListWidget()
+        layout.addWidget(self.list)
+        controls = QHBoxLayout()
+        for label, callback in (
+            ("โปรไฟล์ใหม่", self.create),
+            ("เปลี่ยนชื่อ", self.rename),
+            ("ลบ", self.delete),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            controls.addWidget(button)
+        layout.addLayout(controls)
+        self.use_button = QPushButton("ใช้โปรไฟล์ที่เลือก")
+        self.use_button.clicked.connect(self.accept)
+        layout.addWidget(self.use_button)
+        self.reload()
+
+    def reload(self, select_id=None):
+        collection = load_profiles()
+        self.list.clear()
+        for profile in collection.profiles:
+            item = QListWidgetItem(profile.name)
+            item.setData(Qt.UserRole, profile.id)
+            self.list.addItem(item)
+            if profile.id == (select_id or self.selected_profile_id):
+                self.list.setCurrentItem(item)
+
+    def current_id(self):
+        item = self.list.currentItem()
+        return item.data(Qt.UserRole) if item else ""
+
+    def create(self):
+        name, accepted = QInputDialog.getText(self, "โปรไฟล์ใหม่", "ชื่อเรื่อง")
+        if accepted and name.strip():
+            profile = create_profile(name)
+            self.selected_profile_id = profile.id
+            self.reload(profile.id)
+
+    def rename(self):
+        profile_id = self.current_id()
+        if not profile_id:
+            return
+        profile = next((item for item in load_profiles().profiles if item.id == profile_id), None)
+        if profile:
+            name, accepted = QInputDialog.getText(self, "เปลี่ยนชื่อโปรไฟล์", "ชื่อเรื่อง", text=profile.name)
+            if accepted and name.strip():
+                update_profile(profile_id, name=name)
+                self.reload(profile_id)
+
+    def delete(self):
+        profile_id = self.current_id()
+        collection = load_profiles()
+        if not profile_id or len(collection.profiles) <= 1:
+            return
+        answer = QMessageBox.question(self, "ลบโปรไฟล์", "ลบโปรไฟล์นี้หรือไม่? ไฟล์ต้นฉบับจะไม่ถูกลบ")
+        if answer == QMessageBox.Yes:
+            delete_profile(profile_id)
+            self.selected_profile_id = load_profiles().active_profile_id
+            self.reload(self.selected_profile_id)
+
+    def accept(self):
+        self.selected_profile_id = self.current_id()
+        if self.selected_profile_id:
+            super().accept()
 
 
 class SettingsDialog(QDialog):
@@ -310,10 +396,26 @@ class MainWindow(QMainWindow):
         update_action = help_menu.addAction("Check for Updates")
         update_action.triggered.connect(self.check_updates)
         self.settings = load_settings()
+        self.profile_collection = load_profiles()
+        if not self.profile_collection.profiles:
+            default_profile = create_profile("นิยายเรื่องแรก")
+            self.profile_collection = load_profiles()
+            self.profile_collection.active_profile_id = default_profile.id
+        active = next(
+            (profile for profile in self.profile_collection.profiles if profile.id == self.profile_collection.active_profile_id),
+            self.profile_collection.profiles[0],
+        )
+        if self.profile_collection.active_profile_id != active.id:
+            self.profile_collection.active_profile_id = active.id
+            save_profiles(self.profile_collection)
+        self.profile = active
+        self.settings.search_chunks = active.search_chunks
+        self.settings.selected_search_prompt = active.selected_search_prompt
+        self.settings.selected_polish_prompt = active.selected_polish_prompt
         self.apply_theme()
         self.workflow = Workflow()
-        self.source_path = ""
-        self.vocab_path = ""
+        self.source_path = self.profile.source_path
+        self.vocab_path = self.profile.vocab_path
         self._thread = None
         self._search_thread = None
         self._search_worker = None
@@ -332,6 +434,9 @@ class MainWindow(QMainWindow):
         title = QLabel(f"<h1>TermFlow</h1><p>Glossary Extraction &amp; Polish Workbench · Version {__version__}</p>")
         head.addWidget(title)
         head.addStretch()
+        self.profile_button = QPushButton(f"เรื่อง: {self.profile.name}")
+        self.profile_button.clicked.connect(self.manage_profiles)
+        head.addWidget(self.profile_button)
         for label, fn in [
             ("New Session", self.new_session),
             ("Open SOURCE", self.open_source),
@@ -400,6 +505,21 @@ class MainWindow(QMainWindow):
         rv.addLayout(copy)
         self.tabs.addTab(review, "2–4. ตรวจผล / เกลา / Copy")
         self.setCentralWidget(root)
+        self.results_stale = False
+        self.stale_label = QLabel("ไฟล์ SOURCE หรือ VOCAB เปลี่ยนแล้ว · ผลเดิมอาจล้าสมัย กรุณาค้นหาใหม่")
+        self.stale_label.setStyleSheet("color: #a05a00; font-weight: bold")
+        self.stale_label.setVisible(False)
+        rv.insertWidget(0, self.stale_label)
+        self.file_watcher = QFileSystemWatcher(self)
+        self.file_watcher.fileChanged.connect(self.schedule_file_check)
+        self.file_watcher.directoryChanged.connect(self.schedule_file_check)
+        self.file_check_timer = QTimer(self)
+        self.file_check_timer.setSingleShot(True)
+        self.file_check_timer.setInterval(500)
+        self.file_check_timer.timeout.connect(self.check_profile_files)
+        self.file_signatures = {}
+        self.pending_file_refreshes = {}
+        self.initialize_profile_files()
         self.statusBar().showMessage("Ready")
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel_request)
@@ -409,6 +529,201 @@ class MainWindow(QMainWindow):
             self.welcome()
         if self.settings.check_updates_on_startup:
             self.check_updates(silent=True)
+
+    def _busy_with_ai(self):
+        return bool(
+            (self._search_thread and self._search_thread.isRunning())
+            or (self._thread and self._thread.isRunning())
+        )
+
+    def _save_profile_state(self):
+        if not getattr(self, "profile", None):
+            return
+        if self.profile.id not in {item.id for item in load_profiles().profiles}:
+            return
+        self.profile = update_profile(
+            self.profile.id,
+            source_path=self.source_path,
+            vocab_path=self.vocab_path,
+            search_chunks=self.settings.search_chunks,
+            selected_search_prompt=self.settings.selected_search_prompt,
+            selected_polish_prompt=self.settings.selected_polish_prompt,
+        )
+        self.profile_collection = load_profiles()
+
+    def manage_profiles(self):
+        if self._busy_with_ai():
+            QMessageBox.information(self, "โปรไฟล์นิยาย", "รอให้คำขอ AI ที่กำลังทำงานจบก่อนสลับโปรไฟล์")
+            return
+        self._save_profile_state()
+        dialog = NovelProfileDialog(self, self.profile.id)
+        if dialog.exec():
+            if dialog.selected_profile_id != self.profile.id:
+                self.switch_profile(dialog.selected_profile_id)
+            else:
+                self.profile = next(
+                    item for item in load_profiles().profiles if item.id == self.profile.id
+                )
+                self.profile_button.setText(f"เรื่อง: {self.profile.name}")
+        else:
+            collection = load_profiles()
+            if collection.active_profile_id != self.profile.id:
+                self.switch_profile(collection.active_profile_id)
+            else:
+                self.profile = next(item for item in collection.profiles if item.id == self.profile.id)
+                self.profile_button.setText(f"เรื่อง: {self.profile.name}")
+
+    def switch_profile(self, profile_id):
+        self._save_profile_state()
+        set_active_profile(profile_id)
+        self.profile_collection = load_profiles()
+        self.profile = next(item for item in self.profile_collection.profiles if item.id == profile_id)
+        self.profile_button.setText(f"เรื่อง: {self.profile.name}")
+        self.settings.search_chunks = self.profile.search_chunks
+        self.settings.selected_search_prompt = self.profile.selected_search_prompt
+        self.settings.selected_polish_prompt = self.profile.selected_polish_prompt
+        save_settings(self.settings)
+        self.new_table.setRowCount(0)
+        self.update_table.setRowCount(0)
+        self.final_table.setRowCount(0)
+        self._set_results_stale(False)
+        self.source_view.clear()
+        self.vocab_view.clear()
+        self.source_path = self.profile.source_path
+        self.vocab_path = self.profile.vocab_path
+        self.workflow = Workflow()
+        self.initialize_profile_files()
+        self.statusBar().showMessage(f"เปิดโปรไฟล์: {self.profile.name}")
+
+    def initialize_profile_files(self):
+        self.file_signatures = {}
+        self._refresh_watched_paths()
+        for kind, path in (("source", self.source_path), ("vocab", self.vocab_path)):
+            if not path:
+                continue
+            try:
+                snapshot = file_snapshot(path)
+                self.file_signatures[kind] = snapshot.sha256
+                self._apply_file_snapshot(kind, snapshot, initial=True)
+            except (OSError, UnicodeError) as exc:
+                self.file_signatures[kind] = None
+                label = "SOURCE" if kind == "source" else "VOCAB"
+                self.statusBar().showMessage(f"อ่าน {label} ไม่สำเร็จ: {exc}")
+        missing = [
+            label
+            for label, path in (("SOURCE", self.source_path), ("VOCAB", self.vocab_path))
+            if path and not Path(path).is_file()
+        ]
+        if missing:
+            self.statusBar().showMessage(f"ไม่พบไฟล์ {' / '.join(missing)} ของโปรไฟล์นี้ · เลือกไฟล์ใหม่ได้")
+
+    def _refresh_watched_paths(self):
+        old_files = self.file_watcher.files()
+        old_dirs = self.file_watcher.directories()
+        if old_files:
+            self.file_watcher.removePaths(old_files)
+        if old_dirs:
+            self.file_watcher.removePaths(old_dirs)
+        paths = [path for path in (self.source_path, self.vocab_path) if path]
+        files = [path for path in paths if Path(path).is_file()]
+        directories = list(dict.fromkeys(str(Path(path).parent) for path in paths if Path(path).parent.is_dir()))
+        if files:
+            self.file_watcher.addPaths(files)
+        if directories:
+            self.file_watcher.addPaths(directories)
+
+    def schedule_file_check(self, *_args):
+        self.file_check_timer.start()
+
+    def check_profile_files(self):
+        for kind, path in (("source", self.source_path), ("vocab", self.vocab_path)):
+            if not path:
+                continue
+            try:
+                snapshot = file_snapshot(path)
+            except (OSError, UnicodeError) as exc:
+                if self.file_signatures.get(kind) is not None:
+                    self.file_signatures[kind] = None
+                    self._mark_results_stale()
+                    self.statusBar().showMessage(f"หาไฟล์ {'SOURCE' if kind == 'source' else 'VOCAB'} ไม่พบหรืออ่านไม่ได้: {exc}")
+                continue
+            previous = self.file_signatures.get(kind)
+            if previous is not None and previous != snapshot.sha256:
+                self.file_signatures[kind] = snapshot.sha256
+                if self._busy_with_ai():
+                    self.pending_file_refreshes[kind] = snapshot
+                    self.statusBar().showMessage("ไฟล์เปลี่ยนระหว่างคำขอ · จะโหลดเนื้อหาใหม่เมื่องานปัจจุบันจบ")
+                else:
+                    self._apply_file_snapshot(kind, snapshot)
+            elif previous is None:
+                self.file_signatures[kind] = snapshot.sha256
+                self._apply_file_snapshot(kind, snapshot)
+        self._refresh_watched_paths()
+
+    def _apply_file_snapshot(self, kind, snapshot: FileSnapshot, initial=False):
+        if kind == "source":
+            if not initial and self.source_view.document().isModified():
+                choice = QMessageBox.question(
+                    self,
+                    "SOURCE เปลี่ยนแปลง",
+                    "ไฟล์ SOURCE ถูกแก้ไขภายนอก แต่มีข้อความที่ยังไม่ได้บันทึกในหน้าจอ ต้องการโหลดไฟล์ล่าสุดหรือไม่?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if choice != QMessageBox.Yes:
+                    self._mark_results_stale()
+                    self.statusBar().showMessage("เก็บข้อความ SOURCE ในหน้าจอไว้ · ไฟล์บนดิสก์มีการเปลี่ยนแปลง")
+                    return
+            self.source_view.setPlainText(snapshot.text)
+            self.source_view.document().setModified(False)
+            self.workflow.source = snapshot.text
+        else:
+            self.vocab_view.setPlainText(snapshot.text)
+            self.workflow.vocab = snapshot.text
+        if not initial:
+            self._mark_results_stale()
+            label = "SOURCE" if kind == "source" else "VOCAB"
+            self.statusBar().showMessage(f"โหลด {label} เวอร์ชันล่าสุดแล้ว · ผลค้นหาเดิมถูกทำเครื่องหมายว่าล้าสมัย")
+
+    def _finish_pending_file_refreshes(self):
+        if self._busy_with_ai() or not self.pending_file_refreshes:
+            return
+        pending = self.pending_file_refreshes
+        self.pending_file_refreshes = {}
+        for kind, snapshot in pending.items():
+            self._apply_file_snapshot(kind, snapshot)
+
+    def _after_ai_thread_finished(self):
+        QTimer.singleShot(0, self._finish_pending_file_refreshes)
+
+    def _set_results_stale(self, stale):
+        self.results_stale = stale
+        self.stale_label.setVisible(stale)
+        polish_button = self.search_action_buttons.get("Send Selected NEW to Polish")
+        if polish_button:
+            polish_button.setEnabled(not stale)
+
+    def _mark_results_stale(self):
+        if self.new_table.rowCount() or self.update_table.rowCount() or self.final_table.rowCount():
+            self._set_results_stale(True)
+
+    def _record_profile_file(self, kind, path):
+        if kind == "source":
+            self.source_path = path
+        else:
+            self.vocab_path = path
+        self.file_signatures[kind] = file_snapshot(path).sha256
+        self._save_profile_state()
+        self._refresh_watched_paths()
+        self._mark_results_stale()
+
+    def _clear_profile_workspace(self):
+        self.source_view.clear()
+        self.vocab_view.clear()
+        self.new_table.setRowCount(0)
+        self.update_table.setRowCount(0)
+        self.final_table.setRowCount(0)
+        self._set_results_stale(False)
 
     def welcome(self):
         dialog = QDialog(self)
@@ -451,9 +766,11 @@ class MainWindow(QMainWindow):
         p, _ = QFileDialog.getOpenFileName(self, "Open SOURCE", "", "Text files (*.txt *.md);;All files (*)")
         if p:
             try:
-                self.source_view.setPlainText(Path(p).read_text(encoding="utf-8-sig"))
-                self.source_path = p
-                self.workflow.source = self.source_view.toPlainText()
+                snapshot = file_snapshot(p)
+                self.source_view.setPlainText(snapshot.text)
+                self.source_view.document().setModified(False)
+                self.workflow.source = snapshot.text
+                self._record_profile_file("source", p)
                 self.statusBar().showMessage("SOURCE loaded")
             except Exception as e:
                 QMessageBox.warning(self, "Open SOURCE", str(e))
@@ -462,9 +779,10 @@ class MainWindow(QMainWindow):
         p, _ = QFileDialog.getOpenFileName(self, "Open VOCAB", "", "VOCAB files (*.txt *.tsv);;All files (*)")
         if p:
             try:
-                self.vocab_view.setPlainText(Path(p).read_text(encoding="utf-8-sig"))
-                self.vocab_path = p
-                self.workflow.vocab = self.vocab_view.toPlainText()
+                snapshot = file_snapshot(p)
+                self.vocab_view.setPlainText(snapshot.text)
+                self.workflow.vocab = snapshot.text
+                self._record_profile_file("vocab", p)
                 self.statusBar().showMessage("VOCAB loaded · READ ONLY")
             except Exception as e:
                 QMessageBox.warning(self, "Open VOCAB", str(e))
@@ -535,6 +853,7 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._close_after_background_work)
+        self._thread.finished.connect(self._after_ai_thread_finished)
         self._thread.start()
 
     def closeEvent(self, event):
@@ -625,6 +944,7 @@ class MainWindow(QMainWindow):
         self._search_worker.failed.connect(self._search_thread.quit)
         self._search_thread.finished.connect(self._search_worker.deleteLater)
         self._search_thread.finished.connect(self._close_after_background_work)
+        self._search_thread.finished.connect(self._after_ai_thread_finished)
         self._search_thread.start()
 
     def cancel_search_batch(self):
@@ -693,6 +1013,8 @@ class MainWindow(QMainWindow):
             self.workflow.accept_search(combined_raw)
             self.fill_table(self.new_table, new_rows)
             self.fill_table(self.update_table, update_rows)
+            self.final_table.setRowCount(0)
+            self._set_results_stale(False)
             self._save_search_batch_history(new_rows, update_rows)
             self.statusBar().showMessage(f"Search Complete · NEW {len(new_rows)} · UPDATE {len(update_rows)}")
         except Exception as exc:
@@ -782,6 +1104,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "บันทึกผลรวมไม่สำเร็จ", str(exc))
 
     def run_polish(self):
+        if self.results_stale:
+            QMessageBox.information(self, "Polish", "SOURCE หรือ VOCAB เปลี่ยนแล้ว กรุณา Run Search ใหม่ก่อนเกลาศัพท์")
+            return
         selected = []
         for row in range(self.new_table.rowCount()):
             if self.new_table.item(row, 0).checkState().value == 2:
@@ -804,6 +1129,8 @@ class MainWindow(QMainWindow):
                 new, updates = self.workflow.accept_search(raw)
                 self.fill_table(self.new_table, new)
                 self.fill_table(self.update_table, updates)
+                self.final_table.setRowCount(0)
+                self._set_results_stale(False)
                 parsed = {"new": new, "update": updates}
                 valid = True
                 self.statusBar().showMessage("Search Complete")
@@ -986,17 +1313,19 @@ class MainWindow(QMainWindow):
 
     def new_session(self):
         self.workflow = Workflow()
-        self.source_view.clear()
-        self.source_path = ""
+        self.workflow.source = self.source_view.toPlainText()
+        self.workflow.vocab = self.vocab_view.toPlainText()
         self.new_table.setRowCount(0)
         self.update_table.setRowCount(0)
         self.final_table.setRowCount(0)
+        self._set_results_stale(False)
         self.statusBar().showMessage("Ready")
 
     def open_settings(self):
         dialog = SettingsDialog(self, self.settings)
         if dialog.exec():
             self.settings = load_settings()
+            self._save_profile_state()
             self.apply_theme()
 
     def prompt_manager(self):
@@ -1008,6 +1337,7 @@ class MainWindow(QMainWindow):
             else:
                 self.settings.selected_polish_prompt = prompt["id"]
             save_settings(self.settings)
+            self._save_profile_state()
 
     def history_dialog(self):
         entries = list_history()
