@@ -1,0 +1,46 @@
+from enum import StrEnum
+
+
+class State(StrEnum):
+    IDLE = "IDLE"
+    SOURCE_LOADED = "SOURCE_LOADED"
+    READY_FOR_SEARCH = "READY_FOR_SEARCH"
+    SEARCH_RUNNING = "SEARCH_RUNNING"
+    SEARCH_VALIDATING = "SEARCH_VALIDATING"
+    SEARCH_FAILED = "SEARCH_FAILED"
+    SEARCH_COMPLETE = "SEARCH_COMPLETE"
+    USER_REVIEW = "USER_REVIEW"
+    POLISH_READY = "POLISH_READY"
+    POLISH_RUNNING = "POLISH_RUNNING"
+    POLISH_VALIDATING = "POLISH_VALIDATING"
+    POLISH_FAILED = "POLISH_FAILED"
+    POLISH_COMPLETE = "POLISH_COMPLETE"
+    FINAL_READY = "FINAL_READY"
+
+
+ALLOWED = {
+    State.IDLE: {State.SOURCE_LOADED, State.READY_FOR_SEARCH},
+    State.SOURCE_LOADED: {State.READY_FOR_SEARCH, State.IDLE},
+    State.READY_FOR_SEARCH: {State.SEARCH_RUNNING, State.SOURCE_LOADED},
+    State.SEARCH_RUNNING: {State.SEARCH_VALIDATING, State.SEARCH_FAILED, State.READY_FOR_SEARCH},
+    State.SEARCH_VALIDATING: {State.SEARCH_COMPLETE, State.SEARCH_FAILED},
+    State.SEARCH_FAILED: {State.SEARCH_RUNNING, State.READY_FOR_SEARCH},
+    State.SEARCH_COMPLETE: {State.USER_REVIEW, State.SEARCH_RUNNING},
+    State.USER_REVIEW: {State.POLISH_READY, State.SEARCH_RUNNING, State.FINAL_READY},
+    State.POLISH_READY: {State.POLISH_RUNNING, State.USER_REVIEW},
+    State.POLISH_RUNNING: {State.POLISH_VALIDATING, State.POLISH_FAILED, State.POLISH_READY},
+    State.POLISH_VALIDATING: {State.POLISH_COMPLETE, State.POLISH_FAILED},
+    State.POLISH_FAILED: {State.POLISH_RUNNING, State.POLISH_READY},
+    State.POLISH_COMPLETE: {State.FINAL_READY, State.POLISH_RUNNING},
+    State.FINAL_READY: {State.USER_REVIEW, State.POLISH_READY},
+}
+
+
+class WorkflowState:
+    def __init__(self) -> None:
+        self.current = State.IDLE
+
+    def transition(self, target: State) -> None:
+        if target not in ALLOWED[self.current]:
+            raise ValueError(f"Invalid workflow transition: {self.current} -> {target}")
+        self.current = target

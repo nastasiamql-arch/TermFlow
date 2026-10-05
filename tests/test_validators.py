@@ -1,0 +1,56 @@
+import pytest
+
+from termflow.core.errors import ValidationError
+from termflow.validators.step_a_validator import EMPTY, NEW, UPDATE, validate_step_a
+from termflow.validators.step_b_validator import COPY_READY, validate_step_b
+
+
+def a(new=None, update=None):
+    return f"{NEW}\n{EMPTY if new is None else new}\n{UPDATE}\n{EMPTY if update is None else update}"
+
+
+def test_step_a_valid_and_both_empty():
+    assert validate_step_a(a("林雪\tหลินเสวี่ย\tหญิง\tศิษย์สำนัก"))[0][0][0] == "林雪"
+    assert validate_step_a(a()) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f"林雪\tหลิน\tหญิง\tnote\n{UPDATE}\n{EMPTY}",
+        f"{NEW}\n{EMPTY}",
+        f"{UPDATE}\n{EMPTY}\n{NEW}\n{EMPTY}",
+        a("CN\tTH\tชาย"),
+        a("CN\tTH\tชาย\tn\textra"),
+        a("CN\tTH\tother\tn"),
+        a("CN\tTH\tชาย\tn\nCN\tTH\tชาย\tn"),
+        a("\tTH\tชาย\tn"),
+        a("CN\t\tชาย\tn"),
+        a("CN\tTH\tชาย\t"),
+        a("prose"),
+        a("— ไม่มีรายการ —\tTH\tชาย\tn"),
+        a("CN\tTH\tชาย\tn", "CN\tTH2\tชาย\tn"),
+    ],
+)
+def test_step_a_invalid(raw):
+    with pytest.raises((ValidationError, ValueError)):
+        validate_step_a(raw)
+
+
+def test_step_a_new_only_and_update_only():
+    assert len(validate_step_a(a("CN\tTH\t-\tN"))[0]) == 1
+    assert len(validate_step_a(a(update="CN2\tTH\tชาย\tN"))[1]) == 1
+
+
+def test_step_b_contract():
+    source = [[f"CN{i}", "TH", "NOTE"] for i in range(10)]
+    valid = COPY_READY + "\n" + "\n".join("\t".join(r) for r in source)
+    assert len(validate_step_b(valid, source)) == 10
+    for rows in (source[:-1], source + [["CN10", "TH", "NOTE"]]):
+        with pytest.raises(ValidationError):
+            validate_step_b(COPY_READY + "\n" + "\n".join("\t".join(r) for r in rows), source)
+    for bad in (["OTHER", "TH", "N"], ["CN0", "", "N"], ["CN0", "TH", ""]):
+        with pytest.raises(ValidationError):
+            validate_step_b(COPY_READY + "\n" + "\t".join(bad), source[:1])
+    with pytest.raises(ValidationError):
+        validate_step_b(COPY_READY + "\nCN0|TH|NOTE", source[:1])

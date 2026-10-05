@@ -1,0 +1,102 @@
+import httpx
+from pydantic import BaseModel, Field
+
+from termflow.ai.base import AIProvider, GenerateRequest
+
+
+class ProviderConfig(BaseModel):
+    provider: str = "openai"
+    model: str = ""
+    base_url: str = ""
+    timeout: int = Field(default=90, ge=5, le=600)
+    retries: int = Field(default=2, ge=0, le=10)
+
+
+class HTTPProvider(AIProvider):
+    kind = "openai"
+
+    def endpoint(self) -> str:
+        base = self.base_url or {"openai": "https://api.openai.com/v1", "compatible": "http://localhost:11434/v1"}.get(self.kind, "")
+        return base.rstrip("/") + "/chat/completions"
+
+    def headers(self) -> dict[str, str]:
+        h = {"Content-Type": "application/json"}
+        if self.kind == "anthropic":
+            return {"x-api-key": self.api_key, "anthropic-version": "2023-06-01", **h}
+        return {"Authorization": f"Bearer {self.api_key}", **h}
+
+    def generate(self, request: GenerateRequest) -> str:
+        for attempt in range(self.retries + 1):
+            self.check_cancelled()
+            try:
+                return self._generate_once(request)
+            except InterruptedError:
+                raise
+            except httpx.HTTPStatusError as exc:
+                if attempt >= self.retries or exc.response.status_code not in (429, 500, 502, 503, 504):
+                    raise
+            except (httpx.TimeoutException, httpx.ConnectError):
+                if attempt >= self.retries:
+                    raise
+        raise RuntimeError("Request failed after retry limit")
+
+    def _generate_once(self, request: GenerateRequest) -> str:
+        user = "\n\n".join(
+            x
+            for x in (
+                request.user_input,
+                "SOURCE:\n" + request.source if request.source else "",
+                "VOCAB (READ ONLY):\n" + request.vocab if request.vocab else "",
+            )
+            if x
+        )
+        payload = {"model": self.model, "messages": [{"role": "system", "content": request.prompt}, {"role": "user", "content": user}]}
+        if self.kind == "anthropic":
+            payload = {"model": self.model, "max_tokens": 8192, "system": request.prompt, "messages": [{"role": "user", "content": user}]}
+            url = (self.base_url or "https://api.anthropic.com/v1").rstrip("/") + "/messages"
+        elif self.kind == "gemini":
+            url = (self.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip(
+                "/"
+            ) + f"/models/{self.model}:generateContent"
+            payload = {"systemInstruction": {"parts": [{"text": request.prompt}]}, "contents": [{"parts": [{"text": user}]}]}
+        else:
+            url = self.endpoint()
+        with httpx.Client(timeout=self.timeout) as client:
+            self._active_client = client
+            headers = self.headers() if self.kind != "gemini" else {"x-goog-api-key": self.api_key}
+            try:
+                response = client.post(url, headers=headers, json=payload)
+            except httpx.HTTPError:
+                if self.cancelled.is_set():
+                    raise InterruptedError("Request cancelled")
+                raise
+            finally:
+                self._active_client = None
+            response.raise_for_status()
+            data = response.json()
+        try:
+            if self.kind == "anthropic":
+                return "".join(x["text"] for x in data["content"] if x.get("type") == "text")
+            if self.kind == "gemini":
+                return "".join(x["text"] for x in data["candidates"][0]["content"]["parts"])
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("Provider returned an unsupported response format") from exc
+
+    def test_connection(self) -> bool:
+        self.generate(GenerateRequest(prompt="Reply with OK only.", user_input="OK"))
+        return True
+
+    def list_models(self) -> list[str]:
+        if self.kind not in {"openai", "compatible"}:
+            return []
+        base = self.base_url or "https://api.openai.com/v1"
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(base.rstrip("/") + "/models", headers=self.headers())
+            response.raise_for_status()
+            return sorted(x["id"] for x in response.json().get("data", []))
+
+
+def create_provider(config: ProviderConfig, api_key: str) -> AIProvider:
+    cls = type("ConfiguredProvider", (HTTPProvider,), {"kind": config.provider})
+    return cls(api_key, config.model, config.timeout, config.base_url, config.retries)

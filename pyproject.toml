@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "termflow"
+version = "1.0.0"
+description = "Glossary Extraction & Polish Workbench"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["PySide6>=6.7,<6.10", "httpx>=0.27,<1", "pydantic>=2.7,<3", "keyring>=25,<27", "packaging>=24,<27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.6,<1", "pyinstaller>=6.10,<7"]
+
+[project.scripts]
+termflow = "termflow.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
