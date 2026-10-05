@@ -95,7 +95,7 @@
 - [x] Add a progress dialog with Thai status labels, per-chunk NEW/UPDATE counts, overall progress, Cancel, and Retry Failed Chunks.
 - [x] Change `Run Search` to start the ten-part path; disable search/polish/export controls during active work and restore them on completion/cancel.
 - [x] Run coordinator tests, existing tests, and Ruff.
-- [x] Commit as `feat: run ten search chunks with live progress`.
+- [x] Commit as `feat: run ten-part search with review and export`.
 
 ### Task 5: Resolve conflicts, copy/export one combined result, and record history
 
@@ -119,7 +119,7 @@
 - [x] Add `บันทึกผลรวม` using `QFileDialog` and UTF-8 atomic write to the chosen new output path; never default to SOURCE or VOCAB path.
 - [x] Save one atomic history record with each chunk's raw response and validation evidence; verify API keys are absent.
 - [x] Run relevant tests, existing suite, and Ruff.
-- [x] Commit as `feat: review and export combined search results`.
+- [x] Commit as `feat: run ten-part search with review and export`.
 
 ### Task 6: Release documentation, version, and Windows package
 
@@ -134,5 +134,5 @@
 - [x] Bump version to `1.0.5` consistently in version source, project metadata, and installer fallback version.
 - [x] Run full tests with `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest -q` and lint with `F:\Temp\termflow-build-venv\Scripts\ruff.exe check src tests`.
 - [x] Build with `powershell -ExecutionPolicy Bypass -File scripts/package.ps1`, run `dist\TermFlow.exe --check-prompts`, and verify installer output plus SHA-256 sidecar.
-- [ ] Commit as `feat: release ten-part search workflow` and tag `v1.0.5` only after local build and tests pass.
-- [ ] Push branch/tag, wait for GitHub Actions release success, download both release assets, and verify the installer SHA-256 matches the sidecar.
+- [x] Commit feature implementation as `25e50d4`, release metadata as `de0ae4e`, and tag `v1.0.5` after local build and tests passed.
+- [x] Push branch/tag; GitHub Actions release and test workflows passed. Downloaded both release assets and verified the installer SHA-256 matches the sidecar; installed, launched, and uninstalled the released installer successfully.
