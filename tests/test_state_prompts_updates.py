@@ -42,6 +42,22 @@ def test_frozen_prompt_directory_uses_pyinstaller_bundle(tmp_path, monkeypatch):
     assert paths.resolve_prompts_dir() == tmp_path / "prompts"
 
 
+def test_update_installer_waits_for_termflow_to_exit(tmp_path, monkeypatch):
+    import termflow.updater.installer as installer
+
+    calls = []
+    monkeypatch.setattr(installer.os, "getpid", lambda: 4321)
+    monkeypatch.setattr(installer.shutil, "which", lambda _: "powershell.exe")
+    monkeypatch.setattr(installer.subprocess, "Popen", lambda args, **kwargs: calls.append((args, kwargs)))
+
+    installer.launch_installer(tmp_path / "TermFlow Setup.exe")
+
+    command = calls[0][0][-1]
+    assert "Wait-Process -Id 4321" in command
+    assert "Start-Process -FilePath" in command
+    assert "TermFlow Setup.exe" in command
+
+
 def test_custom_prompt_edit_and_delete(tmp_path, monkeypatch):
     import termflow.core.prompts as prompts
 
