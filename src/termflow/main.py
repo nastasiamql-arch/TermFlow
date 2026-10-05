@@ -844,6 +844,11 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if "--check-prompts" in sys.argv:
+        from termflow.core.prompts import list_prompts
+
+        prompts = list_prompts()
+        sys.exit(0 if {item["id"] for item in prompts} >= {"builtin-search", "builtin-polish"} else 1)
     if "--remove-user-data" in sys.argv:
         for provider in ("openai", "anthropic", "gemini", "compatible"):
             delete(provider)

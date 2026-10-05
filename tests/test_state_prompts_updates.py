@@ -31,6 +31,17 @@ def test_builtin_prompts_match_saved_text():
     assert values["builtin-polish"]["content"] == b
 
 
+def test_frozen_prompt_directory_uses_pyinstaller_bundle(tmp_path, monkeypatch):
+    import termflow.storage.paths as paths
+
+    (tmp_path / "prompts" / "search").mkdir(parents=True)
+    (tmp_path / "prompts" / "search" / "vocab_extractor_v3.md").write_text("source prompt", encoding="utf-8")
+    monkeypatch.setattr(paths.sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
+
+    assert paths.resolve_prompts_dir() == tmp_path / "prompts"
+
+
 def test_custom_prompt_edit_and_delete(tmp_path, monkeypatch):
     import termflow.core.prompts as prompts
 
