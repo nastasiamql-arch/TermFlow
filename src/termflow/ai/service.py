@@ -41,10 +41,17 @@ class HTTPProvider(AIProvider):
             except httpx.HTTPStatusError as exc:
                 if attempt >= self.retries or exc.response.status_code not in (429, 500, 502, 503, 504):
                     raise
+                self._wait_before_retry(attempt)
             except (httpx.TimeoutException, httpx.ConnectError):
                 if attempt >= self.retries:
                     raise
+                self._wait_before_retry(attempt)
         raise RuntimeError("Request failed after retry limit")
+
+    def _wait_before_retry(self, attempt: int) -> None:
+        delay = min(2**attempt, 30)
+        self.cancelled.wait(delay)
+        self.check_cancelled()
 
     def _generate_once(self, request: GenerateRequest) -> str:
         user = "\n\n".join(

@@ -69,10 +69,10 @@
 - Existing `HTTPProvider.generate(request)` remains the public provider API.
 - Retry delay is exponential, cancellation-aware, and applies to existing retriable status/timeouts without logging credentials.
 
-- [ ] Add tests for 429/5xx retry delay progression, no retry on non-retriable status, and cancellation during backoff.
-- [ ] Run `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest tests/test_ai_service.py -q` and confirm new tests fail before implementation.
-- [ ] Implement bounded exponential backoff using the provider cancellation event so cancellation interrupts the wait promptly.
-- [ ] Run the AI service tests and lint.
+- [x] Add tests for 429/5xx retry delay progression, no retry on non-retriable status, and cancellation during backoff.
+- [x] Run `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest tests/test_ai_service.py -q` and confirm new tests fail before implementation.
+- [x] Implement bounded exponential backoff using the provider cancellation event so cancellation interrupts the wait promptly.
+- [x] Run the AI service tests and lint.
 - [ ] Commit as `fix: back off and cancel provider retries safely`.
 
 ### Task 4: Background ten-request coordinator and progress UI

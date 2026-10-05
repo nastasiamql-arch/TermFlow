@@ -1,3 +1,7 @@
+import httpx
+import pytest
+
+from termflow.ai.base import GenerateRequest
 from termflow.ai.service import HTTPProvider
 
 
@@ -40,3 +44,58 @@ def test_compatible_pool_path_keeps_path_and_does_not_duplicate_v1():
 
     assert provider.api_v1_base() == "https://api.example.test/pool/v1"
     assert provider.endpoint() == "https://api.example.test/pool/v1/chat/completions"
+
+
+def test_provider_uses_exponential_backoff_for_rate_limit(monkeypatch):
+    provider = HTTPProvider("secret", "model", retries=2)
+    request = GenerateRequest(prompt="p")
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
+    failure = httpx.HTTPStatusError("rate limited", request=response.request, response=response)
+    calls = iter([failure, failure, "ok"])
+    waits = []
+
+    def generate_once(_request):
+        item = next(calls)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(provider, "_generate_once", generate_once)
+    monkeypatch.setattr(provider.cancelled, "wait", lambda seconds: waits.append(seconds) or False)
+
+    assert provider.generate(request) == "ok"
+    assert waits == [1, 2]
+
+
+def test_provider_does_not_retry_non_retriable_status(monkeypatch):
+    provider = HTTPProvider("secret", "model", retries=3)
+    response = httpx.Response(401, request=httpx.Request("POST", "https://example.test"))
+    failure = httpx.HTTPStatusError("unauthorized", request=response.request, response=response)
+    calls = []
+
+    def generate_once(_request):
+        calls.append(True)
+        raise failure
+
+    monkeypatch.setattr(provider, "_generate_once", generate_once)
+    with pytest.raises(httpx.HTTPStatusError):
+        provider.generate(GenerateRequest(prompt="p"))
+    assert len(calls) == 1
+
+
+def test_provider_cancellation_interrupts_retry_backoff(monkeypatch):
+    provider = HTTPProvider("secret", "model", retries=2)
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
+    failure = httpx.HTTPStatusError("rate limited", request=response.request, response=response)
+
+    def generate_once(_request):
+        raise failure
+
+    def cancel_during_wait(_seconds):
+        provider.cancelled.set()
+        return True
+
+    monkeypatch.setattr(provider, "_generate_once", generate_once)
+    monkeypatch.setattr(provider.cancelled, "wait", cancel_during_wait)
+    with pytest.raises(InterruptedError, match="Request cancelled"):
+        provider.generate(GenerateRequest(prompt="p"))
