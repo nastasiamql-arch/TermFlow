@@ -65,7 +65,7 @@ def split_source(source: str, count: int = 10, overlap_units: int = 1) -> list[S
 
     Paragraph breaks are preferred, line breaks are used when there are too
     few paragraphs, and Unicode code-point positions are the final fallback.
-    Empty ranges are retained so the UI always has ten visible slots; callers
+    Empty ranges are retained so the UI has one visible slot per requested chunk; callers
     should mark those slots skipped instead of sending empty AI requests.
     """
     if count < 1:

@@ -55,20 +55,21 @@ class SearchProgressDialog(QDialog):
         "cancelled": "ยกเลิก",
     }
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, chunk_count=3):
         super().__init__(parent)
-        self.setWindowTitle("ค้นหาศัพท์ 10 ช่วง")
+        self.chunk_count = chunk_count
+        self.setWindowTitle(f"ค้นหาศัพท์ {chunk_count} ช่วง")
         self.setMinimumSize(660, 440)
         self.setModal(False)
         layout = QVBoxLayout(self)
         self.summary = QLabel("เตรียมเริ่มค้นหา…")
         layout.addWidget(self.summary)
-        self.table = QTableWidget(10, 5)
+        self.table = QTableWidget(chunk_count, 5)
         self.table.setHorizontalHeaderLabels(["ช่วง", "สถานะ", "NEW", "UPDATE", "รายละเอียด"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
-        for row in range(10):
+        for row in range(chunk_count):
             for col, value in enumerate((str(row + 1), "รอทำงาน", "0", "0", "")):
                 self.table.setItem(row, col, QTableWidgetItem(value))
         layout.addWidget(self.table)
@@ -94,13 +95,13 @@ class SearchProgressDialog(QDialog):
 
     def refresh_summary(self, batch: SearchBatch | None = None):
         if batch is None:
-            statuses = [self.table.item(row, 1).text() for row in range(10)]
+            statuses = [self.table.item(row, 1).text() for row in range(self.chunk_count)]
             completed = statuses.count(self.LABELS["complete"])
             failed = statuses.count(self.LABELS["failed"])
         else:
             completed = batch.completed_count
             failed = sum(run.status.value == "failed" for run in batch.runs)
-        self.summary.setText(f"เสร็จ {completed}/10 ช่วง · ผิดพลาด {failed} ช่วง")
+        self.summary.setText(f"เสร็จ {completed}/{self.chunk_count} ช่วง · ผิดพลาด {failed} ช่วง")
         self.retry.setEnabled(not self.active and failed > 0)
 
     def set_batch(self, batch):

@@ -93,7 +93,8 @@ class SearchCoordinator:
             vocab=self.vocab,
             user_input=(
                 "Return the requested result only. Do not write or modify files. "
-                f"This is SOURCE part {run.chunk.index} of 10. Apply the exact system Prompt to every line of this part."
+                f"This is SOURCE part {run.chunk.index} of {len(self.batch.runs)}. "
+                "Apply the exact system Prompt to every line of this part."
                 f"{suffix}"
             ),
         )
@@ -118,7 +119,10 @@ class SearchCoordinator:
                             run,
                             piece,
                             depth=depth + 1,
-                            suffix=f" This is subpart {sub_index} of {len(pieces)} for SOURCE part {run.chunk.index} of 10.",
+                            suffix=(
+                                f" This is subpart {sub_index} of {len(pieces)} for SOURCE part "
+                                f"{run.chunk.index} of {len(self.batch.runs)}."
+                            ),
                         )
                     )
                 except _SplitCompleted as nested:

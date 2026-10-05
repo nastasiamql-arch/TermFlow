@@ -33,6 +33,13 @@ def test_batch_accepts_only_strictly_valid_per_chunk_results():
     assert batch.runs[1].error
 
 
+def test_batch_supports_three_chunks_for_default_workflow():
+    batch = SearchBatch(split_source("\n\n".join(f"paragraph {i}" for i in range(30)), count=3))
+    assert len(batch.runs) == 3
+    complete_all(batch, {})
+    assert batch.all_complete
+
+
 def test_incomplete_batch_cannot_be_aggregated_and_failed_chunk_can_retry():
     batch = make_batch()
     batch.accept_response(1, response())

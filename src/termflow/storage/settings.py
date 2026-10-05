@@ -15,6 +15,7 @@ class Settings(BaseModel):
     selected_polish_prompt: str = "builtin-polish"
     timeout: int = 90
     retries: int = 2
+    search_chunks: int = 3
     check_updates_on_startup: bool = True
     show_welcome: bool = True
     theme: str = "System"

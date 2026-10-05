@@ -1,6 +1,6 @@
 #define AppName "TermFlow"
 #ifndef AppVersion
-  #define AppVersion "1.0.8"
+  #define AppVersion "1.0.9"
 #endif
 #define AppPublisher "nastasiamql-arch"
 #define AppExe "TermFlow.exe"

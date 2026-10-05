@@ -63,11 +63,11 @@ class SearchAggregation:
 
 
 class SearchBatch:
-    """Own ten chunk states and validated response snapshots."""
+    """Own chunk states and validated response snapshots."""
 
     def __init__(self, chunks: list[SourceChunk]):
-        if len(chunks) != 10:
-            raise ValueError("A multi-part search must contain exactly ten chunks")
+        if not chunks:
+            raise ValueError("A search must contain at least one chunk")
         self.chunks = tuple(chunks)
         self.runs = [ChunkRun(chunk) for chunk in chunks]
         self.cancellation_requested = False

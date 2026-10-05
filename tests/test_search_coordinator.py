@@ -87,6 +87,24 @@ def test_sends_ten_distinct_parts_in_parallel_with_exact_prompt_and_vocab():
     assert all(run.status == ChunkStatus.COMPLETE for run in batch.runs)
 
 
+def test_three_chunk_search_uses_dynamic_part_count():
+    batch = SearchBatch(split_source("\n\n".join(f"paragraph {index}" for index in range(12)), count=3))
+    requests = []
+    lock = Lock()
+    SearchCoordinator(
+        batch,
+        prompt="exact prompt",
+        vocab="read-only vocab",
+        config=ProviderConfig(provider="compatible", model="test"),
+        api_key="test-secret",
+        provider_factory=lambda *_: RecordingProvider(requests, lock),
+    ).run()
+
+    assert batch.all_complete
+    assert len(requests) == 3
+    assert all("of 3." in request.user_input for request in requests)
+
+
 def test_failures_are_isolated_and_retry_only_failed_chunk():
     batch = make_batch()
     requests = []

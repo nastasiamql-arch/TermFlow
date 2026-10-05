@@ -138,6 +138,16 @@ class SettingsDialog(QDialog):
         self.model.addItem(settings.model)
         self.timeout = QLineEdit(str(settings.timeout))
         self.retries = QLineEdit(str(settings.retries))
+        self.search_chunks = QComboBox()
+        for count, label in (
+            (1, "1 ช่วง · แบบเดิม"),
+            (3, "3 ช่วง · แนะนำสำหรับประมาณ 25,000 ตัวอักษร"),
+            (5, "5 ช่วง"),
+            (10, "10 ช่วง · เร็วขึ้น แต่อาจใช้ API มากขึ้น"),
+        ):
+            self.search_chunks.addItem(label, count)
+        selected = self.search_chunks.findData(settings.search_chunks)
+        self.search_chunks.setCurrentIndex(selected if selected >= 0 else self.search_chunks.findData(3))
         self.theme = QComboBox()
         self.theme.addItems(["System", "Light", "Dark"])
         self.theme.setCurrentText(settings.theme)
@@ -159,6 +169,7 @@ class SettingsDialog(QDialog):
         form.addRow("Default Model", self.model)
         form.addRow("Timeout (seconds)", self.timeout)
         form.addRow("Retries", self.retries)
+        form.addRow("แบ่ง SOURCE", self.search_chunks)
         form.addRow("Theme", self.theme)
         form.addRow("", self.startup)
         row = QHBoxLayout()
@@ -177,6 +188,7 @@ class SettingsDialog(QDialog):
         s.model = self.model.currentText().strip()
         s.timeout = int(self.timeout.text())
         s.retries = int(self.retries.text())
+        s.search_chunks = int(self.search_chunks.currentData())
         s.theme = self.theme.currentText()
         s.check_updates_on_startup = self.startup.isChecked()
         if self.key.text():
@@ -571,7 +583,8 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", str(exc))
             return
-        self._search_batch = SearchBatch(split_source(self.workflow.source, count=10, overlap_units=1))
+        chunk_count = self.settings.search_chunks
+        self._search_batch = SearchBatch(split_source(self.workflow.source, count=chunk_count, overlap_units=1))
         self._search_prompt = selected_prompt["content"]
         self._search_selected_prompt = selected_prompt
         self._search_api_key = api_key
@@ -582,8 +595,8 @@ class MainWindow(QMainWindow):
             timeout=self.settings.timeout,
             retries=self.settings.retries,
         )
-        if self.search_progress is None:
-            self.search_progress = SearchProgressDialog(self)
+        if self.search_progress is None or self.search_progress.chunk_count != chunk_count:
+            self.search_progress = SearchProgressDialog(self, chunk_count=chunk_count)
             self.search_progress.cancel_requested.connect(self.cancel_search_batch)
             self.search_progress.retry_requested.connect(self.retry_failed_chunks)
         self.search_progress.show()
@@ -594,7 +607,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setVisible(True)
         for button in self.search_action_buttons.values():
             button.setEnabled(False)
-        self.statusBar().showMessage("กำลังค้นหาทั้ง 10 ช่วง…")
+        self.statusBar().showMessage(f"กำลังค้นหาทั้ง {len(self._search_batch.runs)} ช่วง…")
         self._search_thread = QThread(self)
         self._search_worker = MultiSearchWorker(
             self._search_batch,
@@ -707,7 +720,7 @@ class MainWindow(QMainWindow):
             return value
 
         record = {
-                "workflow": "ten-part-search",
+                "workflow": f"{len(batch.runs)}-part-search",
                 "source_filename": Path(self.source_path).name if self.source_path else "",
                 "vocab_filename": Path(self.vocab_path).name if self.vocab_path else "",
                 "prompt_id": self._search_selected_prompt["id"],
