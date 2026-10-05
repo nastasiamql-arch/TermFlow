@@ -126,6 +126,7 @@ class SettingsDialog(QDialog):
         self.key.setEchoMode(QLineEdit.Password)
         self.key.setPlaceholderText("API key (stored in Windows Credential Manager)")
         self.base = QLineEdit(settings.base_url)
+        self.base.setPlaceholderText("ตัวอย่าง OpenAI-compatible: https://api.example.com/v1")
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.addItem(settings.model)
@@ -207,6 +208,18 @@ class SettingsDialog(QDialog):
             self.model.addItems(values)
             self.model.setEditText(current or (values[0] if values else ""))
             QMessageBox.information(self, "Models", "\n".join(values) if values else "Enter model ID manually for this provider.")
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status in (403, 404, 405, 501):
+                QMessageBox.information(
+                    self,
+                    "Models unavailable",
+                    f"ผู้ให้บริการปฏิเสธการแสดงรายการ Models (HTTP {status})\n"
+                    "กรอก Model ID ในช่อง Default Model ได้เอง แล้วกด Save Settings "
+                    "การแสดงรายการ Models อาจถูกจำกัดแยกจากการเรียกใช้งาน Model",
+                )
+                return
+            QMessageBox.warning(self, "Models", f"โหลด Models ไม่สำเร็จ (HTTP {status})")
         except Exception as e:
             QMessageBox.warning(self, "Models", str(e))
 

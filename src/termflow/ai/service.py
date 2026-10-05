@@ -16,8 +16,14 @@ class HTTPProvider(AIProvider):
     kind = "openai"
 
     def endpoint(self) -> str:
+        return self.api_v1_base() + "/chat/completions"
+
+    def api_v1_base(self) -> str:
         base = self.base_url or {"openai": "https://api.openai.com/v1", "compatible": "http://localhost:11434/v1"}.get(self.kind, "")
-        return base.rstrip("/") + "/chat/completions"
+        base = base.rstrip("/")
+        if not base.rsplit("/", 1)[-1].lower() == "v1":
+            base += "/v1"
+        return base
 
     def headers(self) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
@@ -90,7 +96,7 @@ class HTTPProvider(AIProvider):
     def list_models(self) -> list[str]:
         if self.kind not in {"openai", "compatible"}:
             return []
-        base = self.base_url or "https://api.openai.com/v1"
+        base = self.api_v1_base()
         with httpx.Client(timeout=self.timeout) as client:
             response = client.get(base.rstrip("/") + "/models", headers=self.headers())
             response.raise_for_status()

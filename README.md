@@ -2,7 +2,7 @@
 
 **Glossary Extraction & Polish Workbench** สำหรับช่วยจัดการศัพท์งานนิยายจีน → ไทย โดยผู้ใช้เป็นผู้ตรวจ แก้ และคัดลอกผลลัพธ์ด้วยตนเอง
 
-> TermFlow 1.0.0 สำหรับ Windows x64
+> TermFlow 1.0.1 สำหรับ Windows x64
 
 ## Features
 
@@ -37,7 +37,7 @@ Release installer จะเผยแพร่จาก GitHub Actions เมื�
 
 ## AI API Setup
 
-Settings รองรับ OpenAI, Anthropic, Google Gemini และ OpenAI-compatible service โดยค่าที่จำเป็นแตกต่างกันตามผู้ให้บริการ กรอก API key ใน Settings; key จะเก็บผ่าน keyring แยกจาก `settings.json` ส่วน local-compatible endpoint สามารถใช้ Base URL ของบริการได้
+Settings รองรับ OpenAI, Anthropic, Google Gemini และ OpenAI-compatible service โดยค่าที่จำเป็นแตกต่างกันตามผู้ให้บริการ กรอก API key ใน Settings; key จะเก็บผ่าน keyring แยกจาก `settings.json` สำหรับ OpenAI-compatible ให้ใส่ Base URL ของบริการ/Pool; TermFlow จะใช้ route `/v1` สำหรับ chat และ model listing โดยอัตโนมัติ หาก provider ปิดการ list models ให้กรอก Model ID เอง
 
 ## Search Workflow
 
