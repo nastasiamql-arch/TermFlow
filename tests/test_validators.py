@@ -14,6 +14,18 @@ def test_step_a_valid_and_both_empty():
     assert validate_step_a(a()) == ([], [])
 
 
+def test_step_a_accepts_single_outer_code_block_required_by_prompt():
+    raw = "```text\n" + a("林雪\tหลินเสวี่ย\tหญิง\tศิษย์สำนัก") + "\n```"
+    new_rows, update_rows = validate_step_a(raw)
+    assert new_rows[0][0] == "林雪"
+    assert update_rows == []
+
+
+def test_step_a_still_rejects_no_list_marker_mixed_with_rows():
+    with pytest.raises(ValidationError, match="no-list marker cannot appear with rows"):
+        validate_step_a(a(f"{EMPTY}\n林雪\tหลินเสวี่ย\tหญิง\tศิษย์สำนัก"))
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -30,6 +42,7 @@ def test_step_a_valid_and_both_empty():
         a("prose"),
         a("— ไม่มีรายการ —\tTH\tชาย\tn"),
         a("CN\tTH\tชาย\tn", "CN\tTH2\tชาย\tn"),
+        "```text\n" + a("CN\tTH\tชาย\tn") + "\n```\nextra prose",
     ],
 )
 def test_step_a_invalid(raw):

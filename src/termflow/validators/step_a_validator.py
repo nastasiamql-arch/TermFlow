@@ -10,6 +10,15 @@ SEX_VALUES = {"ชาย", "หญิง", "ยังไม่ยืนยัน
 def validate_step_a(raw: str) -> tuple[list[list[str]], list[list[str]]]:
     errors: list[str] = []
     lines = raw.splitlines()
+    # Prompt A's source of truth explicitly requires the structured result to
+    # be wrapped in one code block. Remove only that outer wrapper; all content
+    # inside remains subject to the exact same strict TSV validation below.
+    if lines and lines[0].strip() in {"```", "```text"}:
+        if not lines[-1].strip() == "```" or len(lines) < 3:
+            raise ValidationError(["Expected one complete outer code block"])
+        lines = lines[1:-1]
+    elif any(line.strip() in {"```", "```text"} for line in lines):
+        raise ValidationError(["Unexpected Markdown code fence"])
     if lines.count(NEW) != 1:
         errors.append(f"Expected '{NEW}' exactly once")
     if lines.count(UPDATE) != 1:
