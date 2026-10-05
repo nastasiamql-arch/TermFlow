@@ -69,6 +69,7 @@ class SearchBatch:
             raise ValueError("A multi-part search must contain exactly ten chunks")
         self.chunks = tuple(chunks)
         self.runs = [ChunkRun(chunk) for chunk in chunks]
+        self.cancellation_requested = False
         for run in self.runs:
             if run.chunk.core_start == run.chunk.core_end or not run.chunk.text.strip():
                 run.status = ChunkStatus.COMPLETE
@@ -101,7 +102,7 @@ class SearchBatch:
 
     def accept_response(self, index: int, raw: str) -> bool:
         run = self._run(index)
-        if run.status not in {ChunkStatus.RUNNING, ChunkStatus.PENDING, ChunkStatus.RETRYING}:
+        if run.status not in {ChunkStatus.RUNNING, ChunkStatus.VALIDATING, ChunkStatus.PENDING, ChunkStatus.RETRYING}:
             raise ValueError(f"Chunk {index} cannot accept a response from {run.status}")
         run.status = ChunkStatus.VALIDATING
         run.raw_response = raw
@@ -137,9 +138,17 @@ class SearchBatch:
         return True
 
     def cancel_pending(self) -> None:
+        self.cancellation_requested = True
         for run in self.runs:
             if run.status in {ChunkStatus.PENDING, ChunkStatus.RUNNING, ChunkStatus.VALIDATING, ChunkStatus.RETRYING}:
                 run.status = ChunkStatus.CANCELLED
+
+    def resume(self) -> None:
+        """Clear cancellation and make unfinished chunks eligible for a resumed run."""
+        self.cancellation_requested = False
+        for run in self.runs:
+            if run.status == ChunkStatus.CANCELLED:
+                run.status = ChunkStatus.PENDING
 
     def aggregate(self) -> SearchAggregation:
         return aggregate_batch(self)

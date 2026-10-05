@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import sys
 import tempfile
@@ -37,12 +38,17 @@ from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.logging_config import configure_logging
 from termflow.core.prompts import list_prompts
+from termflow.core.search_batch import ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
+from termflow.core.search_chunks import split_source
+from termflow.core.search_export import format_step_a_result
 from termflow.core.state_machine import State
 from termflow.core.workflow import Workflow
 from termflow.storage.credentials import delete, get, store
 from termflow.storage.paths import APPDATA, LOCAL
 from termflow.storage.settings import load_settings, save_settings
 from termflow.ui.prompt_manager import PromptManagerDialog
+from termflow.ui.search_conflicts import ConflictResolutionDialog
+from termflow.ui.search_progress import MultiSearchWorker, SearchProgressDialog
 from termflow.updater.downloader import download
 from termflow.updater.github_releases import latest_release
 from termflow.updater.installer import launch_installer
@@ -297,6 +303,15 @@ class MainWindow(QMainWindow):
         self.source_path = ""
         self.vocab_path = ""
         self._thread = None
+        self._search_thread = None
+        self._search_worker = None
+        self._search_batch = None
+        self._search_prompt = None
+        self._search_selected_prompt = None
+        self._search_config = None
+        self._search_api_key = None
+        self.search_progress = None
+        self._close_after_worker = False
         self.update_thread = None
         self.download_thread = None
         root = QWidget()
@@ -342,6 +357,7 @@ class MainWindow(QMainWindow):
         rv.addWidget(QLabel("คำศัพท์อัปเดต"))
         rv.addWidget(self.update_table)
         row = QHBoxLayout()
+        self.search_action_buttons = {}
         for label, fn in [
             ("Select All", lambda: self.select_rows(True)),
             ("Select None", lambda: self.select_rows(False)),
@@ -350,10 +366,13 @@ class MainWindow(QMainWindow):
             ("Copy NEW", lambda: self.copy_table(self.new_table)),
             ("Copy UPDATE", lambda: self.copy_table(self.update_table)),
             ("Copy All", self.copy_all_a),
+            ("บันทึกผลรวม", self.export_search_result),
         ]:
             b = QPushButton(label)
             b.clicked.connect(fn)
             row.addWidget(b)
+            if label in {"Run Search", "Send Selected NEW to Polish", "บันทึกผลรวม"}:
+                self.search_action_buttons[label] = b
         rv.addLayout(row)
         rv.addWidget(QLabel("Final Result · CN / TH / SEX / NOTE"))
         rv.addWidget(self.final_table)
@@ -502,19 +521,252 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self.on_error)
         self._worker.done.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._close_after_background_work)
         self._thread.start()
 
+    def closeEvent(self, event):
+        active_search = self._search_thread and self._search_thread.isRunning()
+        active_request = self._thread and self._thread.isRunning()
+        if active_search or active_request:
+            self._close_after_worker = True
+            if active_search:
+                self.cancel_search_batch()
+            elif self._provider:
+                self._provider.cancel()
+            self.statusBar().showMessage("กำลังยกเลิกคำขอก่อนปิดโปรแกรม…")
+            event.ignore()
+            return
+        event.accept()
+
+    def _close_after_background_work(self):
+        if self._close_after_worker:
+            self._close_after_worker = False
+            self.close()
+
     def run_search(self):
+        if self._search_thread and self._search_thread.isRunning():
+            return
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
+        if not self.workflow.source.strip():
+            QMessageBox.information(self, "หาศัพท์", "เปิด SOURCE หรือวางเนื้อหาก่อนเริ่มค้นหา")
+            return
+        if not self.settings.model:
+            self.open_settings()
+            self.settings = load_settings()
+        if not self.settings.model:
+            QMessageBox.information(self, "Model", "เลือก Default Model ใน Settings ก่อนเริ่มค้นหา")
+            return
+        api_key = get(self.settings.provider)
+        if not api_key:
+            QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
+            return
+        selected_prompt = self.prompt_file("A")
+        if not selected_prompt or not selected_prompt.get("content", "").strip():
+            QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
+            return
         try:
             self.workflow.begin_search()
+        except ValueError as exc:
+            QMessageBox.warning(self, "หาศัพท์", str(exc))
+            return
+        self._search_batch = SearchBatch(split_source(self.workflow.source, count=10, overlap_units=1))
+        self._search_prompt = selected_prompt["content"]
+        self._search_selected_prompt = selected_prompt
+        self._search_api_key = api_key
+        self._search_config = ProviderConfig(
+            provider=self.settings.provider,
+            model=self.settings.model,
+            base_url=self.settings.base_url,
+            timeout=self.settings.timeout,
+            retries=self.settings.retries,
+        )
+        if self.search_progress is None:
+            self.search_progress = SearchProgressDialog(self)
+            self.search_progress.cancel_requested.connect(self.cancel_search_batch)
+            self.search_progress.retry_requested.connect(self.retry_failed_chunks)
+        self.search_progress.show()
+        self._start_search_worker()
+
+    def _start_search_worker(self):
+        self.search_progress.set_active(True)
+        self.cancel_button.setVisible(True)
+        for button in self.search_action_buttons.values():
+            button.setEnabled(False)
+        self.statusBar().showMessage("กำลังค้นหาทั้ง 10 ช่วง…")
+        self._search_thread = QThread(self)
+        self._search_worker = MultiSearchWorker(
+            self._search_batch,
+            self._search_prompt,
+            self.workflow.vocab,
+            self._search_config,
+            self._search_api_key,
+        )
+        self._search_worker.moveToThread(self._search_thread)
+        self._search_thread.started.connect(self._search_worker.run)
+        self._search_worker.progress.connect(self.search_progress.update_chunk)
+        self._search_worker.finished.connect(self.on_search_batch_finished)
+        self._search_worker.failed.connect(self.on_search_batch_error)
+        self._search_worker.finished.connect(self._search_thread.quit)
+        self._search_worker.failed.connect(self._search_thread.quit)
+        self._search_thread.finished.connect(self._search_worker.deleteLater)
+        self._search_thread.finished.connect(self._close_after_background_work)
+        self._search_thread.start()
+
+    def cancel_search_batch(self):
+        if self._search_worker:
+            self._search_worker.cancel()
+            self.statusBar().showMessage("กำลังยกเลิกคำขอที่กำลังทำงาน…")
+
+    def retry_failed_chunks(self):
+        if self._search_thread and self._search_thread.isRunning():
+            return
+        failed = [run for run in self._search_batch.runs if run.status == ChunkStatus.FAILED]
+        if not failed:
+            return
+        for run in failed:
+            self._search_batch.retry_chunk(run.chunk.index)
+        self._search_batch.resume()
+        try:
+            self.workflow.state.transition(State.SEARCH_RUNNING)
         except ValueError:
-            self.workflow = Workflow()
-            self.workflow.source = self.source_view.toPlainText()
-            self.workflow.vocab = self.vocab_view.toPlainText()
-            self.workflow.begin_search()
-        self.request("A")
+            pass
+        self._start_search_worker()
+
+    def on_search_batch_error(self, message):
+        self.cancel_button.setVisible(False)
+        for button in self.search_action_buttons.values():
+            button.setEnabled(True)
+        self.search_progress.set_active(False)
+        try:
+            self.workflow.state.transition(State.SEARCH_FAILED)
+        except ValueError:
+            pass
+        self.statusBar().showMessage("ค้นหาไม่สำเร็จ")
+        QMessageBox.warning(self, "ค้นหาศัพท์ไม่สำเร็จ", message)
+
+    def on_search_batch_finished(self, batch):
+        self.cancel_button.setVisible(False)
+        for button in self.search_action_buttons.values():
+            button.setEnabled(True)
+        self._search_batch = batch
+        self.search_progress.set_batch(batch)
+        if any(run.status == ChunkStatus.FAILED for run in batch.runs):
+            try:
+                self.workflow.state.transition(State.SEARCH_FAILED)
+            except ValueError:
+                pass
+            self.statusBar().showMessage("บางช่วงค้นหาไม่สำเร็จ · กดลองช่วงที่ผิดพลาดอีกครั้ง")
+            return
+        if batch.cancellation_requested or any(run.status == ChunkStatus.CANCELLED for run in batch.runs):
+            try:
+                self.workflow.state.transition(State.READY_FOR_SEARCH)
+            except ValueError:
+                pass
+            self.statusBar().showMessage("ยกเลิกการค้นหาแล้ว · ผลที่ยังไม่ครบจะไม่ถูกรวม")
+            return
+        try:
+            aggregation = aggregate_batch(batch)
+            if aggregation.conflicts:
+                dialog = ConflictResolutionDialog(aggregation, self)
+                if dialog.exec() != QDialog.Accepted:
+                    self.workflow.state.transition(State.SEARCH_FAILED)
+                    self.statusBar().showMessage("ยังไม่รวมผล · เลือกผลที่ขัดแย้งแล้วค้นหาใหม่ได้")
+                    return
+                aggregation = apply_conflict_choices(aggregation, dialog.choices)
+            new_rows, update_rows = aggregation.new_rows, aggregation.update_rows
+            combined_raw = format_step_a_result(new_rows, update_rows)
+            self.workflow.accept_search(combined_raw)
+            self.fill_table(self.new_table, new_rows)
+            self.fill_table(self.update_table, update_rows)
+            self._save_search_batch_history(new_rows, update_rows)
+            self.statusBar().showMessage(f"Search Complete · NEW {len(new_rows)} · UPDATE {len(update_rows)}")
+        except Exception as exc:
+            try:
+                self.workflow.state.transition(State.SEARCH_FAILED)
+            except ValueError:
+                pass
+            self.statusBar().showMessage("Validation Failed")
+            QMessageBox.warning(self, "รวมผลค้นหาไม่สำเร็จ", str(exc))
+
+    def _save_search_batch_history(self, new_rows, update_rows):
+        batch = self._search_batch
+        input_text = self.workflow.source + self.workflow.vocab
+        secret = self._search_api_key or ""
+
+        def redact(value):
+            if isinstance(value, str):
+                return value.replace(secret, "[REDACTED]") if secret else value
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, tuple):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                return {key: redact(item) for key, item in value.items()}
+            return value
+
+        record = {
+                "workflow": "ten-part-search",
+                "source_filename": Path(self.source_path).name if self.source_path else "",
+                "vocab_filename": Path(self.vocab_path).name if self.vocab_path else "",
+                "prompt_id": self._search_selected_prompt["id"],
+                "prompt_name": self._search_selected_prompt["name"],
+                "prompt_version": self._search_selected_prompt["version"],
+                "exact_prompt_text": self._search_prompt,
+                "prompt_sha256": hashlib.sha256(self._search_prompt.encode("utf-8")).hexdigest(),
+                "provider": self._search_config.provider,
+                "model": self._search_config.model,
+                "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
+                "parsed_result": {"new": new_rows, "update": update_rows},
+                "validation_result": {"passed": True, "details": "All non-empty source chunks passed strict STEP A validation."},
+                "chunks": [
+                    {
+                        "index": run.chunk.index,
+                        "core_range": [run.chunk.core_start, run.chunk.core_end],
+                        "request_range": [run.chunk.request_start, run.chunk.request_end],
+                        "input_sha256": hashlib.sha256(run.chunk.text.encode("utf-8")).hexdigest(),
+                        "status": run.status.value,
+                        "retry_count": run.retry_count,
+                        "raw_response": run.raw_response,
+                        "parsed_result": {"new": run.new_rows, "update": run.update_rows},
+                        "validation_result": {"passed": run.status == ChunkStatus.COMPLETE, "details": run.error},
+                        "attempts": run.attempts,
+                    }
+                    for run in batch.runs
+                ],
+            }
+        save_snapshot(redact(record))
+
+    def export_search_result(self):
+        if self.workflow.state.current not in {State.USER_REVIEW, State.FINAL_READY}:
+            QMessageBox.information(self, "บันทึกผลรวม", "ต้องค้นหาและตรวจผลครบก่อน")
+            return
+        destination, _ = QFileDialog.getSaveFileName(self, "บันทึกผลค้นหา", "TermFlow-ผลค้นหา.txt", "Text files (*.txt)")
+        if not destination:
+            return
+        target = Path(destination).resolve()
+        protected = {Path(path).resolve() for path in (self.source_path, self.vocab_path) if path}
+        if target in protected:
+            QMessageBox.warning(self, "บันทึกไม่ได้", "เลือก path ใหม่ ห้ามบันทึกทับ SOURCE หรือ VOCAB")
+            return
+        content = format_step_a_result(
+            [[self.new_table.item(row, col).text() for col in range(1, 5)] for row in range(self.new_table.rowCount())],
+            [[self.update_table.item(row, col).text() for col in range(1, 5)] for row in range(self.update_table.rowCount())],
+        )
+        temp_path = None
+        try:
+            destination_path = Path(destination)
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=destination_path.parent, delete=False) as stream:
+                stream.write(content)
+                temp_path = Path(stream.name)
+            os.replace(temp_path, destination_path)
+            QMessageBox.information(self, "บันทึกผลรวม", "บันทึกไฟล์ผลค้นหาเรียบร้อย")
+        except Exception as exc:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
+            QMessageBox.warning(self, "บันทึกผลรวมไม่สำเร็จ", str(exc))
 
     def run_polish(self):
         selected = []
@@ -602,6 +854,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Request failed")
 
     def cancel_request(self):
+        if self._search_thread and self._search_thread.isRunning():
+            self.cancel_search_batch()
+            return
         if self._provider:
             self._provider.cancel()
             self.statusBar().showMessage("Cancelling request…")
@@ -715,11 +970,11 @@ class MainWindow(QMainWindow):
             for j, value in enumerate(row):
                 self.final_table.setItem(i, j, QTableWidgetItem(value))
         self.final_table.resizeColumnsToContents()
-        QApplication.clipboard().setText(value)
 
     def new_session(self):
         self.workflow = Workflow()
         self.source_view.clear()
+        self.source_path = ""
         self.new_table.setRowCount(0)
         self.update_table.setRowCount(0)
         self.final_table.setRowCount(0)
