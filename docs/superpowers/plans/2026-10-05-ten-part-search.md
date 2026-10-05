@@ -32,32 +32,31 @@
 - Produces `SourceChunk(index: int, core_start: int, core_end: int, request_start: int, request_end: int, text: str)` and `split_source(source: str, count: int = 10, overlap_units: int = 1) -> list[SourceChunk]`.
 - `core_start/core_end` partition the source without overlap; `request_start/request_end` include neighbor context.
 
-- [ ] Write failing tests for ten ordered chunks, complete non-overlap core coverage, overlap at boundaries, preserved Unicode/CRLF, paragraph-first boundaries, line fallback, one-line fallback, and empty/short sources.
-- [ ] Run `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest tests/test_search_chunks.py -q` and confirm the missing module fails collection.
-- [ ] Implement paragraph and line boundary discovery, balanced target offsets, Unicode-safe fallback offsets, and explicit empty/short input behavior.
-- [ ] Run the focused tests and verify concatenating core slices reproduces SOURCE exactly and every request slice includes its core slice.
-- [ ] Run `F:\Temp\termflow-build-venv\Scripts\ruff.exe check src/termflow/core/search_chunks.py tests/test_search_chunks.py`.
-- [ ] Commit as `feat: split source into ten search chunks`.
+- [x] Write failing tests for ten ordered chunks, complete non-overlap core coverage, overlap at boundaries, preserved Unicode/CRLF, paragraph-first boundaries, line fallback, one-line fallback, and empty/short sources.
+- [x] Run `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest tests/test_search_chunks.py -q` and confirm the missing module fails collection.
+- [x] Implement paragraph and line boundary discovery, balanced target offsets, Unicode-safe fallback offsets, and explicit empty/short input behavior.
+- [x] Run the focused tests and verify concatenating core slices reproduces SOURCE exactly and every request slice includes its core slice.
+- [x] Run `F:\Temp\termflow-build-venv\Scripts\ruff.exe check src/termflow/core/search_chunks.py tests/test_search_chunks.py`.
+- [x] Commit as `feat: split source into ten search chunks`.
 
 ### Task 2: Batch state, strict per-chunk results, and aggregation
 
 **Files:**
 - Create: `src/termflow/core/search_batch.py`
-- Modify: `src/termflow/core/workflow.py`
 - Create: `tests/test_search_batch.py`
 
 **Interfaces:**
 - `ChunkStatus` values are `pending`, `running`, `validating`, `retrying`, `complete`, `failed`, and `cancelled`.
 - `ChunkRun` stores its `SourceChunk`, status, retries, raw response, parsed NEW/UPDATE rows, and error text.
-- `SearchBatch` owns ten runs, supports `set_status`, `accept_response`, `fail_chunk`, `retry_chunk`, `cancel_pending`, and `aggregate`.
+- `SearchBatch` owns ten runs, supports `mark_running`, `mark_validating`, `accept_response`, `fail_chunk`, `retry_chunk`, `cancel_pending`, and `aggregate`.
 - `aggregate` returns ordered unique rows and conflicts containing all `(chunk_index, category, row)` candidates; it never chooses a candidate.
 
-- [ ] Write failing tests for state transitions, validating every raw response through `validate_step_a`, failed-chunk retry without dropping completed results, cancellation, and incomplete-batch blocking.
-- [ ] Write failing aggregation tests for exact overlap duplicates, source-order preservation, same-CN conflicts within/between categories, and keeping every conflicting candidate.
-- [ ] Run `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest tests/test_search_batch.py -q` and confirm expected failures.
-- [ ] Implement typed batch/result models and deterministic aggregation sorted by chunk index then row order.
-- [ ] Make aggregate readiness false until ten non-empty tasks are valid and all conflicts are resolved; mark empty source portions as skipped-complete without sending blank API requests.
-- [ ] Run focused tests and `F:\Temp\termflow-build-venv\Scripts\ruff.exe check src/termflow/core/search_batch.py src/termflow/core/workflow.py tests/test_search_batch.py`.
+- [x] Write failing tests for state transitions, validating every raw response through `validate_step_a`, failed-chunk retry without dropping completed results, cancellation, and incomplete-batch blocking.
+- [x] Write failing aggregation tests for exact overlap duplicates, source-order preservation, same-CN conflicts within/between categories, and keeping every conflicting candidate.
+- [x] Run `F:\Temp\termflow-build-venv\Scripts\python.exe -m pytest tests/test_search_batch.py -q` and confirm expected failures.
+- [x] Implement typed batch/result models and deterministic aggregation sorted by chunk index then row order.
+- [x] Make aggregate readiness false until ten non-empty tasks are valid and all conflicts are resolved; mark empty source portions as skipped-complete without sending blank API requests.
+- [x] Run focused tests and `F:\Temp\termflow-build-venv\Scripts\ruff.exe check src/termflow/core/search_batch.py tests/test_search_batch.py`.
 - [ ] Commit as `feat: aggregate validated multi-part search results`.
 
 ### Task 3: Cancellable provider backoff for request bursts
