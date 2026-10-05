@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressDialog,
     QPushButton,
-    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -58,6 +57,7 @@ from termflow.storage.profiles import (
     update_profile,
 )
 from termflow.storage.settings import load_settings, save_settings
+from termflow.ui.copyable_table import CopyableTableWidget
 from termflow.ui.prompt_manager import PromptManagerDialog
 from termflow.ui.search_conflicts import ConflictResolutionDialog
 from termflow.ui.search_progress import MultiSearchWorker, SearchProgressDialog
@@ -225,13 +225,19 @@ class SettingsDialog(QDialog):
         self.timeout = QLineEdit(str(settings.timeout))
         self.retries = QLineEdit(str(settings.retries))
         self.search_chunks = QComboBox()
-        for count, label in (
-            (1, "1 ช่วง · แบบเดิม"),
-            (3, "3 ช่วง · แนะนำสำหรับประมาณ 25,000 ตัวอักษร"),
-            (5, "5 ช่วง"),
-            (10, "10 ช่วง · เร็วขึ้น แต่อาจใช้ API มากขึ้น"),
-        ):
+        for count in range(1, 21):
+            if count == 1:
+                label = "1 ช่วง · เหมาะกับไม่เกิน 10,000 ตัวอักษร"
+            else:
+                lower = count * 5_000
+                upper = count * 10_000
+                label = f"{count} ช่วง · เหมาะกับประมาณ {lower:,}–{upper:,} ตัวอักษร"
             self.search_chunks.addItem(label, count)
+            self.search_chunks.setItemData(
+                self.search_chunks.count() - 1,
+                f"แบ่ง SOURCE เป็น {count} คำขอ · โดยประมาณ {5_000:,}–{10_000:,} ตัวอักษรต่อช่วง",
+                Qt.ToolTipRole,
+            )
         selected = self.search_chunks.findData(settings.search_chunks)
         self.search_chunks.setCurrentIndex(selected if selected >= 0 else self.search_chunks.findData(3))
         self.theme = QComboBox()
@@ -256,6 +262,7 @@ class SettingsDialog(QDialog):
         form.addRow("Timeout (seconds)", self.timeout)
         form.addRow("Retries", self.retries)
         form.addRow("แบ่ง SOURCE", self.search_chunks)
+        form.addRow("คำแนะนำ", QLabel("จำนวนช่วงมากขึ้นจะแบ่งละเอียดและส่งหลาย API requests มากขึ้น · 1–20 ช่วง"))
         form.addRow("Theme", self.theme)
         form.addRow("", self.startup)
         row = QHBoxLayout()
@@ -461,14 +468,15 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.vocab_view, "VOCAB · READ ONLY 🔒")
         review = QWidget()
         rv = QVBoxLayout(review)
-        self.new_table = QTableWidget(0, 5)
+        self.new_table = CopyableTableWidget(0, 5, first_data_column=1)
         self.new_table.setHorizontalHeaderLabels(["Select", "CN", "TH", "SEX", "NOTE"])
-        self.update_table = QTableWidget(0, 5)
+        self.update_table = CopyableTableWidget(0, 5, first_data_column=1)
         self.update_table.setHorizontalHeaderLabels(["Select", "CN", "TH", "SEX", "NOTE"])
-        self.final_table = QTableWidget(0, 4)
+        self.final_table = CopyableTableWidget(0, 4)
         self.final_table.setHorizontalHeaderLabels(["CN", "TH", "SEX", "NOTE"])
         self.final_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.final_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        rv.addWidget(QLabel("ลากเลือกช่องในตารางแล้วกด Ctrl+C เพื่อคัดลอกเป็น TSV"))
         rv.addWidget(QLabel("คำศัพท์ใหม่"))
         rv.addWidget(self.new_table)
         rv.addWidget(QLabel("คำศัพท์อัปเดต"))
