@@ -2,7 +2,7 @@
 
 **Glossary Extraction & Polish Workbench** สำหรับช่วยจัดการศัพท์งานนิยายจีน → ไทย โดยผู้ใช้เป็นผู้ตรวจ แก้ และคัดลอกผลลัพธ์ด้วยตนเอง
 
-> TermFlow 1.0.6 สำหรับ Windows x64
+> TermFlow 1.0.7 สำหรับ Windows x64
 
 ## Features
 
@@ -60,7 +60,7 @@ STEP A ใช้ `prompts/search/vocab_extractor_v3.md` ซึ่งนำเข
 
 ## Update App
 
-ปุ่ม Check for Updates ตรวจ release stable ล่าสุดจาก GitHub และดาวน์โหลด installer พร้อมตรวจ SHA-256 เมื่อ release มีไฟล์ checksum ก่อนเปิด installer จะถามยืนยันทุกครั้ง ไม่มีการดาวน์โหลดหรือติดตั้งอัตโนมัติ
+ปุ่ม Check for Updates ตรวจ release stable ล่าสุดจาก GitHub และดาวน์โหลด installer พร้อมตรวจ SHA-256 เมื่อ release มีไฟล์ checksum หลังโหลดจะเปิดหน้าต่างยืนยันติดตั้งไว้ด้านหน้า ผู้ใช้ต้องกดยืนยันทุกครั้ง ไม่มีการติดตั้งอัตโนมัติ
 
 ## Privacy / Security
 
@@ -83,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
 ## Release Process
 
-อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.0.6` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
+อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.0.7` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
 
 ## Troubleshooting
 

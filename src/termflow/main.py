@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Event
 
 import httpx
-from PySide6.QtCore import QObject, QThread, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1086,15 +1086,29 @@ class MainWindow(QMainWindow):
         self.download_progress.setValue(100)
         self.download_progress.close()
         path, digest = result.split("|", 1)
-        answer = QMessageBox.question(
-            self,
-            "Ready to install",
-            f"Ready to install TermFlow.\nSHA-256: {digest}\n\nInstall and close TermFlow?",
-            QMessageBox.Yes | QMessageBox.Cancel,
-            QMessageBox.Cancel,
+        self.activateWindow()
+        self.raise_()
+        message = QMessageBox(self)
+        message.setWindowTitle("Update downloaded")
+        message.setIcon(QMessageBox.Information)
+        message.setText("ดาวน์โหลดและตรวจสอบไฟล์ติดตั้งเรียบร้อยแล้ว")
+        message.setInformativeText(
+            f"Update is ready to install.\nSHA-256: {digest}\n\n"
+            "กด Install and Close TermFlow เพื่อปิดโปรแกรมและเปิดตัวติดตั้ง "
+            "หรือกด Cancel เพื่อติดตั้งภายหลัง"
         )
-        if answer == QMessageBox.Yes:
-            launch_installer(Path(path))
+        message.setWindowModality(Qt.ApplicationModal)
+        message.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        install_button = message.addButton("Install and Close TermFlow", QMessageBox.AcceptRole)
+        message.addButton("Cancel", QMessageBox.RejectRole)
+        message.setDefaultButton(install_button)
+        message.exec()
+        if message.clickedButton() == install_button:
+            try:
+                launch_installer(Path(path))
+            except Exception as exc:
+                QMessageBox.critical(self, "เปิดตัวติดตั้งไม่ได้", f"TermFlow เปิดตัวติดตั้งไม่สำเร็จ:\n{exc}")
+                return
             QApplication.quit()
 
 
