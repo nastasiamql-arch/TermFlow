@@ -2,7 +2,7 @@
 
 **Glossary Extraction & Polish Workbench** สำหรับช่วยจัดการศัพท์งานนิยายจีน → ไทย โดยผู้ใช้เป็นผู้ตรวจ แก้ และคัดลอกผลลัพธ์ด้วยตนเอง
 
-> TermFlow 1.0.1 สำหรับ Windows x64
+> TermFlow 1.0.5 สำหรับ Windows x64
 
 ## Features
 
@@ -15,6 +15,11 @@
 - เก็บ API key ผ่าน keyring/Windows Credential Manager
 - เก็บประวัติ local พร้อม exact prompt snapshot และ raw response
 - ตรวจ GitHub Releases และเปรียบเทียบเวอร์ชัน
+- แบ่ง SOURCE อัตโนมัติเป็น 10 ช่วงและค้นหาพร้อมกัน โดยใช้ Prompt A เดิมทุกคำ
+- แสดงสถานะแยกแต่ละช่วง จำนวน NEW/UPDATE และเหตุผลเมื่อช่วงใดทำไม่สำเร็จ
+- ลองใหม่เฉพาะช่วงที่ล้มเหลว หรือยกเลิกคำขอที่กำลังทำงานได้
+- รวมผลที่ตรวจผ่านเป็นชุดเดียว ตัดแถวซ้ำจากบริเวณเหลื่อม และให้ผู้ใช้เลือกเมื่อ CN เดียวกันได้หลายผล
+- บันทึกผลค้นหารวมเป็นไฟล์ UTF-8 ไฟล์เดียว โดย SOURCE และ VOCAB ยังคงอ่านอย่างเดียว
 
 ## Screenshots
 
@@ -31,9 +36,10 @@ Release installer จะเผยแพร่จาก GitHub Actions เมื�
 1. เปิด Settings แล้วตั้ง Provider, API Key และ Model
 2. เปิด VOCAB (แอปอ่านอย่างเดียว)
 3. เปิด SOURCE หรือวางข้อความ
-4. Run Search แล้วตรวจ/เลือก NEW rows
-5. เลือกศัพท์และส่งไป Polish
-6. ตรวจผลสุดท้ายและ Copy TSV ไปวางด้วยตนเอง
+4. กด Run Search โปรแกรมจะแบ่ง SOURCE เป็น 10 ช่วงและแสดงความคืบหน้า หากบางช่วงล้มเหลว กดลองเฉพาะช่วงนั้นซ้ำได้
+5. เมื่อครบทุกช่วง โปรแกรมรวมผลที่ผ่าน validation ให้ตรวจ/เลือก NEW rows หากพบ CN ที่ผลไม่ตรงกัน ให้เลือกหนึ่งแถวที่ต้องการ
+6. เลือกศัพท์ NEW แล้วกด Send Selected NEW to Polish
+7. ตรวจผลสุดท้ายและ Copy TSV ไปวางด้วยตนเอง หรือกดบันทึกผลรวมเป็นไฟล์ข้อความ
 
 ## AI API Setup
 
@@ -41,7 +47,11 @@ Settings รองรับ OpenAI, Anthropic, Google Gemini และ OpenAI-co
 
 ## Search Workflow
 
-STEP A ใช้ `prompts/search/vocab_extractor_v3.md` ซึ่งนำเข้าจากไฟล์ต้นฉบับ `a หาศัพท์.md` โดยคงไบต์เดิมไว้ ตรวจผลให้มี section คำศัพท์ใหม่และคำศัพท์อัปเดตตามรูปแบบ TSV 4 คอลัมน์
+STEP A ใช้ `prompts/search/vocab_extractor_v3.md` ซึ่งนำเข้าจากไฟล์ต้นฉบับ `a หาศัพท์.md` โดยคงเนื้อหา Prompt เดิมไว้ โปรแกรมส่ง Prompt A ฉบับเดิม, VOCAB (ถ้ามี) และส่วนของ SOURCE ที่แบ่งไว้ให้แต่ละคำขอ ทุกคำขอต้องผ่าน strict validator ก่อนรวมผล
+
+แต่ละช่วงใช้บริบทเหลื่อมใกล้ขอบเขตเล็กน้อยเพื่อไม่ตัดศัพท์ที่อยู่ตรงรอยแบ่ง โปรแกรมตัดเฉพาะแถวที่เหมือนกันทุกช่องซึ่งเกิดซ้ำจากบริเวณเหลื่อม ส่วนแถว CN เดียวกันที่มีข้อมูลต่างกันจะแสดงหน้าต่างให้ผู้ใช้เลือกทั้งแถว ไม่มีการผสมหรือเขียนทับข้อมูลให้อัตโนมัติ ผลจะใช้ได้เมื่อทุกช่วงผ่าน validation ครบเท่านั้น
+
+การค้นหา 10 ช่วงส่งคำขอพร้อมกัน จึงอาจใช้โควตาและค่า API เพิ่มขึ้น หากผู้ให้บริการจำกัดคำขอ ช่วงที่ผิดพลาดสามารถกดลองใหม่โดยคงผลของช่วงที่สำเร็จไว้
 
 ## Polish Workflow
 
@@ -72,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
 ## Release Process
 
-อัปเดต `src/termflow/version.py` และ `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag เช่น `v1.0.0` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
+อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.0.5` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
 
 ## Troubleshooting
 
