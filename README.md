@@ -2,7 +2,7 @@
 
 **Glossary Extraction & Polish Workbench** สำหรับช่วยจัดการศัพท์งานนิยายจีน → ไทย โดยผู้ใช้เป็นผู้ตรวจ แก้ และคัดลอกผลลัพธ์ด้วยตนเอง
 
-> TermFlow 1.0.7 สำหรับ Windows x64
+> TermFlow 1.0.8 สำหรับ Windows x64
 
 ## Features
 
@@ -56,7 +56,7 @@ STEP A ใช้ `prompts/search/vocab_extractor_v3.md` ซึ่งนำเข
 
 ## Polish Workflow
 
-ส่งเฉพาะ NEW rows ที่เลือกผ่าน adapter ในรูป CN, TH, NOTE; SEX จะถูกพักไว้และคืนตาม CN หลังตรวจ STEP B สำเร็จ ไม่ส่ง UPDATE ไปโดยอัตโนมัติ
+ส่งเฉพาะ NEW rows ที่เลือกผ่าน adapter ในรูป CN, TH, NOTE; SEX จะถูกพักไว้และคืนตาม CN หลังตรวจ STEP B สำเร็จ ไม่ส่ง UPDATE ไปโดยอัตโนมัติ โปรแกรมแยก TSV จาก code block ตามรูปแบบของ Prompt B แล้วตรวจจำนวนแถว, CN, TH, NOTE ก่อนแสดงผล
 
 ## Update App
 
@@ -83,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
 ## Release Process
 
-อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.0.7` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
+อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.0.8` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
 
 ## Troubleshooting
 

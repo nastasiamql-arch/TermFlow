@@ -67,3 +67,21 @@ def test_step_b_contract():
             validate_step_b(COPY_READY + "\n" + "\t".join(bad), source[:1])
     with pytest.raises(ValidationError):
         validate_step_b(COPY_READY + "\nCN0|TH|NOTE", source[:1])
+
+
+def test_step_b_extracts_tsv_from_prompt_required_code_block():
+    source = [["林雪", "หลินเสวี่ย", "ศิษย์สำนัก"]]
+    raw = (
+        "Analysis and summary may appear before the copy-ready result.\n"
+        f"{COPY_READY}\n```text\n林雪\tหลินเสวี่ย\tศิษย์สำนัก\n```"
+    )
+
+    assert validate_step_b(raw, source) == source
+
+
+def test_step_b_still_rejects_prose_or_extra_markdown_after_tsv_fence():
+    source = [["林雪", "หลินเสวี่ย", "ศิษย์สำนัก"]]
+    raw = f"{COPY_READY}\n```tsv\n林雪\tหลินเสวี่ย\tศิษย์สำนัก\n```\nextra prose"
+
+    with pytest.raises(ValidationError, match="Markdown contamination"):
+        validate_step_b(raw, source)

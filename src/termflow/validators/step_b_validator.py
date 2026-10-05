@@ -1,3 +1,5 @@
+import re
+
 from termflow.core.errors import ValidationError
 from termflow.validators.common import parse_tsv
 
@@ -9,7 +11,14 @@ def validate_step_b(raw: str, input_rows: list[list[str]]) -> list[list[str]]:
     if raw.count(COPY_READY) != 1:
         raise ValidationError([f"Expected one '{COPY_READY}' block"])
     block = raw.split(COPY_READY, 1)[1].strip()
-    if "```" in block or "|" in block:
+    if block.startswith("```"):
+        match = re.fullmatch(r"```(?:text|tsv)?[ \t]*\r?\n(.*?)\r?\n```", block, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            raise ValidationError(["Markdown contamination in copy-ready block"])
+        block = match.group(1).strip()
+    elif "```" in block:
+        raise ValidationError(["Markdown contamination in copy-ready block"])
+    if "|" in block:
         raise ValidationError(["Markdown contamination in copy-ready block"])
     try:
         out = parse_tsv(block, 3)

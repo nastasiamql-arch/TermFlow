@@ -30,3 +30,18 @@ def test_prompt_loader_preserves_source(tmp_path: Path):
     text, digest = load_prompt(p)
     assert text == "Exact\r\nPrompt\r\n"
     assert len(digest) == 64
+
+
+def test_polish_accepts_prompt_b_analysis_and_fenced_copy_ready_tsv():
+    workflow = Workflow()
+    selected = [["林雪", "หลินเสวี่ย", "หญิง", "ศิษย์สำนัก"]]
+    workflow.begin_search()
+    workflow.accept_search(f"{NEW}\n林雪\tหลินเสวี่ย\tหญิง\tศิษย์สำนัก\n{UPDATE}\n{EMPTY}")
+    b_input = workflow.prepare_polish(selected)
+    workflow.begin_polish()
+    response = (
+        "[Genre: XIANXIA]\nAnalysis and change summary.\n"
+        f"{COPY_READY}\n```text\n林雪\tหลินเสวี่ย\tศิษย์สำนัก\n```"
+    )
+
+    assert workflow.accept_polish(response, b_input) == [["林雪", "หลินเสวี่ย", "หญิง", "ศิษย์สำนัก"]]
