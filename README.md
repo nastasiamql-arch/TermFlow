@@ -2,7 +2,7 @@
 
 **Glossary Extraction & Polish Workbench** สำหรับช่วยจัดการศัพท์งานนิยายจีน → ไทย โดยผู้ใช้เป็นผู้ตรวจ แก้ และคัดลอกผลลัพธ์ด้วยตนเอง
 
-> TermFlow 1.1.1 สำหรับ Windows x64
+> TermFlow 1.1.2 สำหรับ Windows x64
 
 ## Features
 
@@ -92,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
 ## Release Process
 
-อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.1.1` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
+อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.1.2` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
 
 ## Troubleshooting
 

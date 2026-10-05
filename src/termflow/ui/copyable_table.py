@@ -1,38 +1,202 @@
-from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidget
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QFontDatabase, QPainter, QTextFormat
+from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
 
 
-def format_selected_cells(cells: list[tuple[int, int, str]], first_data_column: int = 0) -> str:
-    """Format selected table cells as a rectangular TSV block."""
-    values = {(row, column): text for row, column, text in cells if column >= first_data_column}
-    if not values:
-        return ""
+class _LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
 
-    rows = range(min(row for row, _column in values), max(row for row, _column in values) + 1)
-    columns = range(min(column for _row, column in values), max(column for _row, column in values) + 1)
-    return "\n".join(
-        "\t".join(values.get((row, column), "") for column in columns)
-        for row in rows
-    )
+    def sizeHint(self):
+        return QSize(self.editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event):
+        self.editor.paint_line_number_area(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.editor.begin_line_gutter_drag(event.position().toPoint().y())
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            self.editor.extend_line_gutter_drag(event.position().toPoint().y())
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.editor.leave_line_gutter_drag()
+        super().mouseReleaseEvent(event)
 
 
-class CopyableTableWidget(QTableWidget):
-    def __init__(self, rows=0, columns=0, *, first_data_column=0, parent=None):
-        super().__init__(rows, columns, parent)
-        self.first_data_column = first_data_column
-        self.setSelectionMode(QTableWidget.ExtendedSelection)
-        self.setSelectionBehavior(QAbstractItemView.SelectItems)
-        self.setToolTip("ลากเลือกช่องที่ต้องการ แล้วกด Ctrl+C เพื่อคัดลอกเป็น TSV")
+class CopyableTableWidget(QPlainTextEdit):
+    """Editable TSV view with VS Code-like text selection and row selection gutter."""
 
-    def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Copy):
-            cells = [
-                (index.row(), index.column(), str(index.data() or ""))
-                for index in self.selectionModel().selectedIndexes()
-            ]
-            value = format_selected_cells(cells, self.first_data_column)
-            if value:
-                QApplication.clipboard().setText(value)
-                event.accept()
-                return
-        super().keyPressEvent(event)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._selected_lines: set[int] = set()
+        self._drag_line = None
+        self._drag_target_state = None
+        self._line_number_area = _LineNumberArea(self)
+        self.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
+        self.setPlaceholderText("CN\tTH\tSEX\tNOTE")
+        self.setToolTip(
+            "ลากเลือกข้อความแล้วกด Ctrl+C เพื่อคัดลอกเหมือน VS Code · "
+            "คลิกแถบเลขบรรทัดเพื่อเลือกศัพท์สำหรับ Polish"
+        )
+        self.blockCountChanged.connect(self.update_line_number_area_width)
+        self.updateRequest.connect(self.update_line_number_area)
+        self.textChanged.connect(self._on_text_changed)
+        self.update_line_number_area_width()
+
+    def line_number_area_width(self):
+        digits = max(2, len(str(max(1, self.blockCount()))))
+        return 14 + self.fontMetrics().horizontalAdvance("9") * digits + 14
+
+    def update_line_number_area_width(self, *_args):
+        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+
+    def update_line_number_area(self, rect, dy):
+        if dy:
+            self._line_number_area.scroll(0, dy)
+        else:
+            self._line_number_area.update(0, rect.y(), self._line_number_area.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self.update_line_number_area_width()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        contents = self.contentsRect()
+        self._line_number_area.setGeometry(
+            QRect(contents.left(), contents.top(), self.line_number_area_width(), contents.height())
+        )
+
+    def paint_line_number_area(self, event):
+        painter = QPainter(self._line_number_area)
+        painter.fillRect(event.rect(), self.palette().alternateBase())
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + round(self.blockBoundingRect(block).height())
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                line_rect = QRect(0, top, self._line_number_area.width(), self.fontMetrics().height())
+                line_index = block.blockNumber()
+                if line_index in self._selected_lines:
+                    painter.fillRect(line_rect, QColor(48, 124, 181, 70))
+                    painter.setPen(self.palette().text().color())
+                    painter.drawText(1, top, 13, line_rect.height(), Qt.AlignCenter, "✓")
+                else:
+                    painter.setPen(self.palette().mid().color())
+                painter.drawText(
+                    14,
+                    top,
+                    self._line_number_area.width() - 17,
+                    line_rect.height(),
+                    Qt.AlignRight | Qt.AlignVCenter,
+                    str(block_number + 1),
+                )
+            block = block.next()
+            top = bottom
+            bottom = top + round(self.blockBoundingRect(block).height())
+            block_number += 1
+
+    def _line_at(self, y):
+        point = self._line_number_area.mapTo(self.viewport(), QPoint(0, y))
+        return self.cursorForPosition(point).blockNumber()
+
+    def begin_line_gutter_drag(self, y):
+        line = self._line_at(y)
+        if line in self._selected_lines:
+            self._selected_lines.remove(line)
+            self._drag_target_state = False
+        else:
+            self._selected_lines.add(line)
+            self._drag_target_state = True
+        self._drag_line = line
+        self._apply_line_highlights()
+        self._line_number_area.update()
+
+    def extend_line_gutter_drag(self, y):
+        line = self._line_at(y)
+        if self._drag_line == line:
+            return
+        if self._drag_target_state:
+            self._selected_lines.add(line)
+        else:
+            self._selected_lines.discard(line)
+        self._drag_line = line
+        self._apply_line_highlights()
+        self._line_number_area.update()
+
+    def leave_line_gutter_drag(self):
+        self._drag_line = None
+        self._drag_target_state = None
+
+    def _on_text_changed(self):
+        count = self.blockCount()
+        self._selected_lines = {line for line in self._selected_lines if line < count}
+        self._apply_line_highlights()
+        self._line_number_area.update()
+
+    def _apply_line_highlights(self):
+        selections = []
+        color = QColor(48, 124, 181, 48)
+        for line in sorted(self._selected_lines):
+            block = self.document().findBlockByNumber(line)
+            if not block.isValid():
+                continue
+            selection = QTextEdit.ExtraSelection()
+            selection.format.setBackground(color)
+            selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+            selection.cursor = self.textCursor()
+            selection.cursor.setPosition(block.position())
+            selections.append(selection)
+        self.setExtraSelections(selections)
+
+    def fill_rows(self, rows):
+        self.blockSignals(True)
+        self.setPlainText("\n".join("\t".join(str(value) for value in row) for row in rows))
+        self._selected_lines = set(range(len(rows)))
+        self.blockSignals(False)
+        self.update_line_number_area_width()
+        self._apply_line_highlights()
+        self._line_number_area.update()
+
+    def clear(self):
+        self._selected_lines.clear()
+        self._drag_line = None
+        self._drag_target_state = None
+        super().clear()
+        self._line_number_area.update()
+
+    def all_rows(self):
+        rows = []
+        block = self.document().begin()
+        while block.isValid():
+            line = block.text()
+            if line.strip():
+                rows.append(line.split("\t"))
+            block = block.next()
+        return rows
+
+    def selected_rows(self):
+        rows = []
+        block = self.document().begin()
+        while block.isValid():
+            index = block.blockNumber()
+            line = block.text()
+            if line.strip() and index in self._selected_lines:
+                rows.append(line.split("\t"))
+            block = block.next()
+        return rows
+
+    def row_count(self):
+        return len(self.all_rows())
+
+    def select_all_rows(self, selected):
+        self._selected_lines = set(range(self.blockCount())) if selected else set()
+        self._apply_line_highlights()
+        self._line_number_area.update()

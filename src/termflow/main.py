@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressDialog,
     QPushButton,
+    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -468,19 +469,17 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.vocab_view, "VOCAB · READ ONLY 🔒")
         review = QWidget()
         rv = QVBoxLayout(review)
-        self.new_table = CopyableTableWidget(0, 5, first_data_column=1)
-        self.new_table.setHorizontalHeaderLabels(["Select", "CN", "TH", "SEX", "NOTE"])
-        self.update_table = CopyableTableWidget(0, 5, first_data_column=1)
-        self.update_table.setHorizontalHeaderLabels(["Select", "CN", "TH", "SEX", "NOTE"])
-        self.final_table = CopyableTableWidget(0, 4)
+        self.new_table = CopyableTableWidget()
+        self.update_table = CopyableTableWidget()
+        self.final_table = QTableWidget(0, 4)
         self.final_table.setHorizontalHeaderLabels(["CN", "TH", "SEX", "NOTE"])
         self.final_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.final_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        rv.addWidget(QLabel("ลากเลือกช่องในตารางแล้วกด Ctrl+C เพื่อคัดลอกเป็น TSV"))
-        rv.addWidget(QLabel("คำศัพท์ใหม่"))
+        rv.addWidget(QLabel("ศัพท์ใหม่ · CN    TH    SEX    NOTE"))
         rv.addWidget(self.new_table)
-        rv.addWidget(QLabel("คำศัพท์อัปเดต"))
+        rv.addWidget(QLabel("ศัพท์อัปเดต · CN    TH    SEX    NOTE"))
         rv.addWidget(self.update_table)
+        rv.addWidget(QLabel("ลากเลือกข้อความแล้วกด Ctrl+C แบบ VS Code · คลิกหรือกวาดแถบเลขบรรทัดเพื่อเลือกศัพท์สำหรับ Polish"))
         row = QHBoxLayout()
         self.search_action_buttons = {}
         for label, fn in [
@@ -591,8 +590,8 @@ class MainWindow(QMainWindow):
         self.settings.selected_search_prompt = self.profile.selected_search_prompt
         self.settings.selected_polish_prompt = self.profile.selected_polish_prompt
         save_settings(self.settings)
-        self.new_table.setRowCount(0)
-        self.update_table.setRowCount(0)
+        self.new_table.clear()
+        self.update_table.clear()
         self.final_table.setRowCount(0)
         self._set_results_stale(False)
         self.source_view.clear()
@@ -712,7 +711,7 @@ class MainWindow(QMainWindow):
             polish_button.setEnabled(not stale)
 
     def _mark_results_stale(self):
-        if self.new_table.rowCount() or self.update_table.rowCount() or self.final_table.rowCount():
+        if self.new_table.row_count() or self.update_table.row_count() or self.final_table.rowCount():
             self._set_results_stale(True)
 
     def _record_profile_file(self, kind, path):
@@ -728,8 +727,8 @@ class MainWindow(QMainWindow):
     def _clear_profile_workspace(self):
         self.source_view.clear()
         self.vocab_view.clear()
-        self.new_table.setRowCount(0)
-        self.update_table.setRowCount(0)
+        self.new_table.clear()
+        self.update_table.clear()
         self.final_table.setRowCount(0)
         self._set_results_stale(False)
 
@@ -1093,10 +1092,7 @@ class MainWindow(QMainWindow):
         if target in protected:
             QMessageBox.warning(self, "บันทึกไม่ได้", "เลือก path ใหม่ ห้ามบันทึกทับ SOURCE หรือ VOCAB")
             return
-        content = format_step_a_result(
-            [[self.new_table.item(row, col).text() for col in range(1, 5)] for row in range(self.new_table.rowCount())],
-            [[self.update_table.item(row, col).text() for col in range(1, 5)] for row in range(self.update_table.rowCount())],
-        )
+        content = format_step_a_result(self.new_table.all_rows(), self.update_table.all_rows())
         temp_path = None
         try:
             destination_path = Path(destination)
@@ -1115,10 +1111,7 @@ class MainWindow(QMainWindow):
         if self.results_stale:
             QMessageBox.information(self, "Polish", "SOURCE หรือ VOCAB เปลี่ยนแล้ว กรุณา Run Search ใหม่ก่อนเกลาศัพท์")
             return
-        selected = []
-        for row in range(self.new_table.rowCount()):
-            if self.new_table.item(row, 0).checkState().value == 2:
-                selected.append([self.new_table.item(row, c).text() for c in range(1, 5)])
+        selected = self.new_table.selected_rows()
         if not selected:
             QMessageBox.information(self, "Polish", "เลือก NEW อย่างน้อยหนึ่งรายการ")
             return
@@ -1254,46 +1247,19 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(raw)
 
     def fill_table(self, table, rows):
-        table.setRowCount(len(rows))
-        from PySide6.QtCore import Qt
-
-        for i, row in enumerate(rows):
-            item = QTableWidgetItem()
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)
-            table.setItem(i, 0, item)
-            for j, value in enumerate(row, 1):
-                table.setItem(i, j, QTableWidgetItem(value))
-        table.resizeColumnsToContents()
+        table.fill_rows(rows)
 
     def select_rows(self, on):
-        from PySide6.QtCore import Qt
-
         for table in (self.new_table, self.update_table):
-            for i in range(table.rowCount()):
-                table.item(i, 0).setCheckState(Qt.Checked if on else Qt.Unchecked)
+            table.select_all_rows(on)
 
     def copy_table(self, table):
-        from PySide6.QtWidgets import QApplication
-
-        QApplication.clipboard().setText(
-            "\n".join(
-                "\t".join(table.item(i, j).text() for j in range(1, 5))
-                for i in range(table.rowCount())
-                if table.item(i, 0).checkState().value == 2
-            )
-        )
+        QApplication.clipboard().setText("\n".join("\t".join(row) for row in table.selected_rows()))
 
     def copy_all_a(self):
-        from PySide6.QtWidgets import QApplication
-
         lines = []
         for table in (self.new_table, self.update_table):
-            lines.extend(
-                "\t".join(table.item(i, j).text() for j in range(1, 5))
-                for i in range(table.rowCount())
-                if table.item(i, 0).checkState().value == 2
-            )
+            lines.extend("\t".join(row) for row in table.selected_rows())
         QApplication.clipboard().setText("\n".join(lines))
 
     def copy_final(self, selected=False):
@@ -1323,8 +1289,8 @@ class MainWindow(QMainWindow):
         self.workflow = Workflow()
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
-        self.new_table.setRowCount(0)
-        self.update_table.setRowCount(0)
+        self.new_table.clear()
+        self.update_table.clear()
         self.final_table.setRowCount(0)
         self._set_results_stale(False)
         self.statusBar().showMessage("Ready")
