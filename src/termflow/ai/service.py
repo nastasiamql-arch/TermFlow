@@ -42,6 +42,10 @@ class HTTPProvider(AIProvider):
                 if attempt >= self.retries or exc.response.status_code not in (429, 500, 502, 503, 504):
                     raise
                 self._wait_before_retry(attempt)
+            except httpx.ReadTimeout:
+                # Replaying a large SOURCE payload rarely fixes a slow response.
+                # Let the workflow split this one part and retry smaller inputs.
+                raise
             except (httpx.TimeoutException, httpx.ConnectError):
                 if attempt >= self.retries:
                     raise

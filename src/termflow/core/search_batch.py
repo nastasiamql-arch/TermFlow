@@ -25,6 +25,7 @@ class ChunkRun:
     update_rows: list[list[str]] = field(default_factory=list)
     error: str = ""
     attempts: list[dict] = field(default_factory=list)
+    split_depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,29 @@ class SearchBatch:
         run.error = ""
         run.status = ChunkStatus.COMPLETE
         run.attempts.append({"raw_response": raw, "valid": True, "new_rows": new_rows, "update_rows": update_rows})
+        return True
+
+    def accept_split_responses(self, index: int, responses: list[str]) -> bool:
+        """Validate every split response before combining rows into its parent chunk."""
+        run = self._run(index)
+        new_rows: list[list[str]] = []
+        update_rows: list[list[str]] = []
+        for raw in responses:
+            try:
+                new_part, update_part = validate_step_a(raw)
+            except Exception as exc:
+                run.status = ChunkStatus.FAILED
+                run.error = str(exc)
+                run.attempts.append({"raw_response": raw, "valid": False, "error": run.error})
+                return False
+            new_rows.extend(new_part)
+            update_rows.extend(update_part)
+            run.attempts.append({"raw_response": raw, "valid": True, "new_rows": new_part, "update_rows": update_part})
+        run.new_rows = new_rows
+        run.update_rows = update_rows
+        run.raw_response = "\n\n".join(responses)
+        run.error = ""
+        run.status = ChunkStatus.COMPLETE
         return True
 
     def fail_chunk(self, index: int, error: str) -> None:

@@ -83,6 +83,21 @@ def test_provider_does_not_retry_non_retriable_status(monkeypatch):
     assert len(calls) == 1
 
 
+def test_provider_does_not_repeat_read_timeout_before_search_can_split(monkeypatch):
+    provider = HTTPProvider("secret", "model", retries=2)
+    calls = []
+
+    def generate_once(_request):
+        calls.append(True)
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    monkeypatch.setattr(provider, "_generate_once", generate_once)
+    with pytest.raises(httpx.ReadTimeout):
+        provider.generate(GenerateRequest(prompt="p"))
+
+    assert len(calls) == 1
+
+
 def test_provider_cancellation_interrupts_retry_backoff(monkeypatch):
     provider = HTTPProvider("secret", "model", retries=2)
     response = httpx.Response(429, request=httpx.Request("POST", "https://example.test"))
