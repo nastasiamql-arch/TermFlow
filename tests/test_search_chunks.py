@@ -1,4 +1,4 @@
-from termflow.core.search_chunks import split_source
+from termflow.core.search_chunks import _PARAGRAPH_BREAK, split_source
 
 
 def test_split_source_returns_ten_ordered_chunks_and_exact_core_coverage():
@@ -12,6 +12,8 @@ def test_split_source_returns_ten_ordered_chunks_and_exact_core_coverage():
     assert chunks[-1].core_end == len(source)
     assert all(left.core_end == right.core_start for left, right in zip(chunks, chunks[1:]))
     assert "".join(source[c.core_start : c.core_end] for c in chunks) == source
+    natural_boundaries = {match.end() for match in _PARAGRAPH_BREAK.finditer(source)}
+    assert all(chunk.core_end in natural_boundaries or chunk.core_end == len(source) for chunk in chunks)
 
 
 def test_request_chunks_overlap_by_neighbor_paragraph_and_cover_core():
@@ -46,6 +48,8 @@ def test_split_source_handles_single_line_unicode_without_losing_characters():
     assert len(chunks) == 5
     assert "".join(source[c.core_start : c.core_end] for c in chunks) == source
     assert all(chunk.text == source[chunk.request_start : chunk.request_end] for chunk in chunks)
+    assert chunks[1].request_start < chunks[1].core_start
+    assert chunks[1].request_end > chunks[1].core_end
 
 
 def test_empty_and_short_sources_have_ten_ranges_without_blank_work():
@@ -53,4 +57,4 @@ def test_empty_and_short_sources_have_ten_ranges_without_blank_work():
     chunks = split_source("abc")
     assert len(chunks) == 10
     assert "".join("abc"[c.core_start : c.core_end] for c in chunks) == "abc"
-    assert sum(bool(chunk.text) for chunk in chunks) == 3
+    assert sum(chunk.core_end > chunk.core_start for chunk in chunks) == 3

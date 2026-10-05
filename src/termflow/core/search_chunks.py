@@ -45,8 +45,10 @@ def _core_boundaries(source: str, count: int, natural: list[int]) -> list[int]:
 
 
 def _request_bounds(core_start: int, core_end: int, boundaries: list[int], length: int, overlap_units: int) -> tuple[int, int]:
-    if overlap_units <= 0 or not boundaries:
+    if overlap_units <= 0:
         return core_start, core_end
+    if not boundaries:
+        return max(0, core_start - overlap_units), min(length, core_end + overlap_units)
 
     start_unit = bisect_right(boundaries, core_start)
     start_boundary_index = max(0, start_unit - overlap_units - 1)
