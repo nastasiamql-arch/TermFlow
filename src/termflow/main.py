@@ -245,10 +245,10 @@ class SettingsDialog(QDialog):
         self.theme.addItems(["System", "Light", "Dark"])
         self.theme.setCurrentText(settings.theme)
         self.font_size = QComboBox()
-        for size, label in ((10, "เล็ก · 10 pt"), (11, "ปกติ · 11 pt"), (13, "ใหญ่ · 13 pt")):
+        for size, label in ((12, "ปกติ · 12 pt"), (14, "ใหญ่ · 14 pt"), (16, "ใหญ่มาก · 16 pt")):
             self.font_size.addItem(label, size)
         selected_font_size = self.font_size.findData(settings.font_size)
-        self.font_size.setCurrentIndex(selected_font_size if selected_font_size >= 0 else self.font_size.findData(11))
+        self.font_size.setCurrentIndex(selected_font_size if selected_font_size >= 0 else self.font_size.findData(12))
         self.startup = QCheckBox("Check for updates on startup")
         self.startup.setChecked(settings.check_updates_on_startup)
         self.remember = QPushButton("Save Settings")
@@ -406,7 +406,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TermFlow")
-        self.resize(1100, 760)
+        self.resize(1280, 900)
         help_menu = self.menuBar().addMenu("Help")
         update_action = help_menu.addAction("Check for Updates")
         update_action.triggered.connect(self.check_updates)
@@ -519,6 +519,7 @@ class MainWindow(QMainWindow):
         rv.addLayout(copy)
         self.tabs.addTab(review, "2–4. ตรวจผล / เกลา / Copy")
         self.setCentralWidget(root)
+        self.apply_theme()
         self.results_stale = False
         self.stale_label = QLabel("ไฟล์ SOURCE หรือ VOCAB เปลี่ยนแล้ว · ผลเดิมอาจล้าสมัย กรุณาค้นหาใหม่")
         self.stale_label.setStyleSheet("color: #a05a00; font-weight: bold")
@@ -776,9 +777,11 @@ class MainWindow(QMainWindow):
             palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
             app.setPalette(palette)
         app.setFont(QFont("Segoe UI", self.settings.font_size))
+        dark_editor = app.palette().color(QPalette.Window).lightness() < 128
         for editor in (getattr(self, "new_table", None), getattr(self, "update_table", None)):
             if editor:
-                editor.set_text_point_size(self.settings.font_size + 1)
+                editor.set_editor_theme(dark_editor)
+                editor.set_text_point_size(self.settings.font_size + 2)
 
     def open_source(self):
         p, _ = QFileDialog.getOpenFileName(self, "Open SOURCE", "", "Text files (*.txt *.md);;All files (*)")
@@ -1419,11 +1422,11 @@ class MainWindow(QMainWindow):
         message = QMessageBox(self)
         message.setWindowTitle("Update downloaded")
         message.setIcon(QMessageBox.Information)
-        message.setText("ดาวน์โหลดและตรวจสอบไฟล์ติดตั้งเรียบร้อยแล้ว")
+        message.setText("ดาวน์โหลดอัปเดตเสร็จแล้ว · ยืนยันการติดตั้งในขั้นตอนถัดไป")
         message.setInformativeText(
-            f"Update is ready to install.\nSHA-256: {digest}\n\n"
-            "กด Install and Close TermFlow เพื่อปิดโปรแกรมและเปิดตัวติดตั้ง "
-            "หรือกด Cancel เพื่อติดตั้งภายหลัง"
+            f"ไฟล์ติดตั้งตรวจสอบแล้ว\nSHA-256: {digest}\n\n"
+            "กด ‘Install and Close TermFlow’ เพื่อปิด TermFlow แล้วเปิดหน้าต่างติดตั้ง "
+            "จากนั้นทำตามขั้นตอนบนหน้าจอ"
         )
         message.setWindowModality(Qt.ApplicationModal)
         message.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -1456,7 +1459,7 @@ def main():
     app.setApplicationName("TermFlow")
     configure_logging(load_settings().debug)
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
 
 

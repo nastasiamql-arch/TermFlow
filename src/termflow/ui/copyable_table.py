@@ -1,6 +1,6 @@
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QFontDatabase, QPainter, QTextFormat
-from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
+from PySide6.QtGui import QColor, QFontDatabase, QPainter
+from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
 
 class _LineNumberArea(QWidget):
@@ -39,15 +39,12 @@ class CopyableTableWidget(QPlainTextEdit):
         self._drag_target_state = None
         self._line_number_area = _LineNumberArea(self)
         self._base_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        self.set_text_point_size(12)
+        self._theme_colors = {}
+        self.set_text_point_size(14)
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
         self.setPlaceholderText("ยังไม่มีรายการ")
-        self.setStyleSheet(
-            "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; "
-            "selection-background-color: #264f78; selection-color: #ffffff; "
-            "border: 1px solid #3c3c3c; padding: 7px; }"
-        )
+        self.set_editor_theme(dark=False)
         self.setToolTip(
             "ลากเลือกข้อความแล้วกด Ctrl+C เพื่อคัดลอกเหมือน VS Code · "
             "คลิกแถบเลขบรรทัดเพื่อเลือกศัพท์สำหรับ Polish"
@@ -81,7 +78,7 @@ class CopyableTableWidget(QPlainTextEdit):
 
     def paint_line_number_area(self, event):
         painter = QPainter(self._line_number_area)
-        painter.fillRect(event.rect(), QColor("#252526"))
+        painter.fillRect(event.rect(), QColor(self._theme_colors["gutter"]))
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
@@ -91,11 +88,11 @@ class CopyableTableWidget(QPlainTextEdit):
                 line_rect = QRect(0, top, self._line_number_area.width(), self.fontMetrics().height())
                 line_index = block.blockNumber()
                 if line_index in self._selected_lines:
-                    painter.fillRect(line_rect, QColor("#264f78"))
-                    painter.setPen(QColor("#4fc1ff"))
+                    painter.fillRect(line_rect, QColor(self._theme_colors["row_selection"]))
+                    painter.setPen(QColor(self._theme_colors["marker"]))
                     painter.drawText(1, top, 13, line_rect.height(), Qt.AlignCenter, "✓")
                 else:
-                    painter.setPen(QColor("#858585"))
+                    painter.setPen(QColor(self._theme_colors["line_number"]))
                 painter.drawText(
                     14,
                     top,
@@ -148,19 +145,7 @@ class CopyableTableWidget(QPlainTextEdit):
         self._line_number_area.update()
 
     def _apply_line_highlights(self):
-        selections = []
-        color = QColor("#293b4d")
-        for line in sorted(self._selected_lines):
-            block = self.document().findBlockByNumber(line)
-            if not block.isValid():
-                continue
-            selection = QTextEdit.ExtraSelection()
-            selection.format.setBackground(color)
-            selection.format.setProperty(QTextFormat.FullWidthSelection, True)
-            selection.cursor = self.textCursor()
-            selection.cursor.setPosition(block.position())
-            selections.append(selection)
-        self.setExtraSelections(selections)
+        self.setExtraSelections([])
 
     def fill_rows(self, rows):
         self.blockSignals(True)
@@ -213,4 +198,30 @@ class CopyableTableWidget(QPlainTextEdit):
         self.setFont(font)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
         self.update_line_number_area_width()
+        self._line_number_area.update()
+
+    def set_editor_theme(self, dark):
+        if dark:
+            self._theme_colors = {
+                "background": "#1e1e1e", "foreground": "#d4d4d4", "gutter": "#252526",
+                "line_number": "#a0a0a0", "marker": "#4fc1ff", "row_selection": "#264f78",
+                "text_selection": "#264f78",
+                "selected_text": "#ffffff", "border": "#b7c8dd",
+            }
+        else:
+            self._theme_colors = {
+                "background": "#ffffff", "foreground": "#202020", "gutter": "#f0f0f0",
+                "line_number": "#666666", "marker": "#0067b8", "row_selection": "#dcecf9",
+                "text_selection": "#add6ff",
+                "selected_text": "#202020", "border": "#c8c8c8",
+            }
+        colors = self._theme_colors
+        self.setStyleSheet(
+            "QPlainTextEdit {"
+            f"background: {colors['background']}; color: {colors['foreground']}; "
+            f"selection-background-color: {colors['text_selection']}; "
+            f"selection-color: {colors['selected_text']}; "
+            f"border: 1px solid {colors['border']}; padding: 7px; }}"
+        )
+        self._apply_line_highlights()
         self._line_number_area.update()

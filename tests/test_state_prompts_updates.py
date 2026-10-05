@@ -61,8 +61,19 @@ def test_update_installer_waits_for_termflow_to_exit(tmp_path, monkeypatch):
 
     command = calls[0][0][-1]
     assert "Wait-Process -Id 4321" in command
-    assert "Start-Process -FilePath" in command
+    assert "Start-Process -FilePath $installer" in command
     assert "TermFlow Setup.exe" in command
+    assert "-WindowStyle Normal" in command
+
+
+def test_saved_default_font_size_is_upgraded_for_readability(tmp_path, monkeypatch):
+    import termflow.storage.settings as settings
+
+    config = tmp_path / "settings.json"
+    config.write_text('{"font_size":11}', encoding="utf-8")
+    monkeypatch.setattr(settings, "settings_path", lambda: config)
+
+    assert settings.load_settings().font_size == 12
 
 
 def test_custom_prompt_edit_and_delete(tmp_path, monkeypatch):

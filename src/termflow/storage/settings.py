@@ -16,7 +16,7 @@ class Settings(BaseModel):
     timeout: int = 90
     retries: int = 2
     search_chunks: int = 3
-    font_size: int = 11
+    font_size: int = 12
     check_updates_on_startup: bool = True
     show_welcome: bool = True
     theme: str = "System"
@@ -29,7 +29,11 @@ def settings_path() -> Path:
 
 def load_settings() -> Settings:
     try:
-        return Settings.model_validate_json(settings_path().read_text("utf-8"))
+        settings = Settings.model_validate_json(settings_path().read_text("utf-8"))
+        # 11 pt was the previous default and rendered too small on common displays.
+        if settings.font_size == 11:
+            settings.font_size = 12
+        return settings
     except (OSError, ValueError):
         return Settings()
 
