@@ -16,6 +16,7 @@ class Settings(BaseModel):
     timeout: int = 90
     retries: int = 2
     search_chunks: int = 3
+    font_size: int = 11
     check_updates_on_startup: bool = True
     show_welcome: bool = True
     theme: str = "System"

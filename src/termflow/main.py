@@ -8,7 +8,7 @@ from threading import Event
 
 import httpx
 from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QPalette
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -244,6 +244,11 @@ class SettingsDialog(QDialog):
         self.theme = QComboBox()
         self.theme.addItems(["System", "Light", "Dark"])
         self.theme.setCurrentText(settings.theme)
+        self.font_size = QComboBox()
+        for size, label in ((10, "เล็ก · 10 pt"), (11, "ปกติ · 11 pt"), (13, "ใหญ่ · 13 pt")):
+            self.font_size.addItem(label, size)
+        selected_font_size = self.font_size.findData(settings.font_size)
+        self.font_size.setCurrentIndex(selected_font_size if selected_font_size >= 0 else self.font_size.findData(11))
         self.startup = QCheckBox("Check for updates on startup")
         self.startup.setChecked(settings.check_updates_on_startup)
         self.remember = QPushButton("Save Settings")
@@ -265,6 +270,7 @@ class SettingsDialog(QDialog):
         form.addRow("แบ่ง SOURCE", self.search_chunks)
         form.addRow("คำแนะนำ", QLabel("จำนวนช่วงมากขึ้นจะแบ่งละเอียดและส่งหลาย API requests มากขึ้น · 1–20 ช่วง"))
         form.addRow("Theme", self.theme)
+        form.addRow("ขนาดตัวอักษร", self.font_size)
         form.addRow("", self.startup)
         row = QHBoxLayout()
         row.addWidget(self.test)
@@ -284,6 +290,7 @@ class SettingsDialog(QDialog):
         s.retries = int(self.retries.text())
         s.search_chunks = int(self.search_chunks.currentData())
         s.theme = self.theme.currentText()
+        s.font_size = int(self.font_size.currentData())
         s.check_updates_on_startup = self.startup.isChecked()
         if self.key.text():
             store(s.provider, self.key.text())
@@ -754,20 +761,24 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if self.settings.theme != "Dark":
             app.setPalette(app.style().standardPalette())
-            return
-        palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(37, 40, 46))
-        palette.setColor(QPalette.WindowText, QColor(235, 237, 240))
-        palette.setColor(QPalette.Base, QColor(27, 29, 34))
-        palette.setColor(QPalette.AlternateBase, QColor(45, 48, 55))
-        palette.setColor(QPalette.ToolTipBase, QColor(235, 237, 240))
-        palette.setColor(QPalette.ToolTipText, QColor(27, 29, 34))
-        palette.setColor(QPalette.Text, QColor(235, 237, 240))
-        palette.setColor(QPalette.Button, QColor(52, 56, 64))
-        palette.setColor(QPalette.ButtonText, QColor(235, 237, 240))
-        palette.setColor(QPalette.Highlight, QColor(62, 128, 210))
-        palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-        app.setPalette(palette)
+        else:
+            palette = QPalette()
+            palette.setColor(QPalette.Window, QColor(37, 40, 46))
+            palette.setColor(QPalette.WindowText, QColor(235, 237, 240))
+            palette.setColor(QPalette.Base, QColor(27, 29, 34))
+            palette.setColor(QPalette.AlternateBase, QColor(45, 48, 55))
+            palette.setColor(QPalette.ToolTipBase, QColor(235, 237, 240))
+            palette.setColor(QPalette.ToolTipText, QColor(27, 29, 34))
+            palette.setColor(QPalette.Text, QColor(235, 237, 240))
+            palette.setColor(QPalette.Button, QColor(52, 56, 64))
+            palette.setColor(QPalette.ButtonText, QColor(235, 237, 240))
+            palette.setColor(QPalette.Highlight, QColor(62, 128, 210))
+            palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+            app.setPalette(palette)
+        app.setFont(QFont("Segoe UI", self.settings.font_size))
+        for editor in (getattr(self, "new_table", None), getattr(self, "update_table", None)):
+            if editor:
+                editor.set_text_point_size(self.settings.font_size + 1)
 
     def open_source(self):
         p, _ = QFileDialog.getOpenFileName(self, "Open SOURCE", "", "Text files (*.txt *.md);;All files (*)")

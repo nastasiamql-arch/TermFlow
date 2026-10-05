@@ -38,10 +38,16 @@ class CopyableTableWidget(QPlainTextEdit):
         self._drag_line = None
         self._drag_target_state = None
         self._line_number_area = _LineNumberArea(self)
-        self.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self._base_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        self.set_text_point_size(12)
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
-        self.setPlaceholderText("CN\tTH\tSEX\tNOTE")
+        self.setPlaceholderText("ยังไม่มีรายการ")
+        self.setStyleSheet(
+            "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; "
+            "selection-background-color: #264f78; selection-color: #ffffff; "
+            "border: 1px solid #3c3c3c; padding: 7px; }"
+        )
         self.setToolTip(
             "ลากเลือกข้อความแล้วกด Ctrl+C เพื่อคัดลอกเหมือน VS Code · "
             "คลิกแถบเลขบรรทัดเพื่อเลือกศัพท์สำหรับ Polish"
@@ -75,7 +81,7 @@ class CopyableTableWidget(QPlainTextEdit):
 
     def paint_line_number_area(self, event):
         painter = QPainter(self._line_number_area)
-        painter.fillRect(event.rect(), self.palette().alternateBase())
+        painter.fillRect(event.rect(), QColor("#252526"))
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
@@ -85,11 +91,11 @@ class CopyableTableWidget(QPlainTextEdit):
                 line_rect = QRect(0, top, self._line_number_area.width(), self.fontMetrics().height())
                 line_index = block.blockNumber()
                 if line_index in self._selected_lines:
-                    painter.fillRect(line_rect, QColor(48, 124, 181, 70))
-                    painter.setPen(self.palette().text().color())
+                    painter.fillRect(line_rect, QColor("#264f78"))
+                    painter.setPen(QColor("#4fc1ff"))
                     painter.drawText(1, top, 13, line_rect.height(), Qt.AlignCenter, "✓")
                 else:
-                    painter.setPen(self.palette().mid().color())
+                    painter.setPen(QColor("#858585"))
                 painter.drawText(
                     14,
                     top,
@@ -143,7 +149,7 @@ class CopyableTableWidget(QPlainTextEdit):
 
     def _apply_line_highlights(self):
         selections = []
-        color = QColor(48, 124, 181, 48)
+        color = QColor("#293b4d")
         for line in sorted(self._selected_lines):
             block = self.document().findBlockByNumber(line)
             if not block.isValid():
@@ -199,4 +205,12 @@ class CopyableTableWidget(QPlainTextEdit):
     def select_all_rows(self, selected):
         self._selected_lines = set(range(self.blockCount())) if selected else set()
         self._apply_line_highlights()
+        self._line_number_area.update()
+
+    def set_text_point_size(self, size):
+        font = self._base_font
+        font.setPointSize(size)
+        self.setFont(font)
+        self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
+        self.update_line_number_area_width()
         self._line_number_area.update()

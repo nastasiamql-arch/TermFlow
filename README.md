@@ -2,7 +2,7 @@
 
 **Glossary Extraction & Polish Workbench** สำหรับช่วยจัดการศัพท์งานนิยายจีน → ไทย โดยผู้ใช้เป็นผู้ตรวจ แก้ และคัดลอกผลลัพธ์ด้วยตนเอง
 
-> TermFlow 1.1.2 สำหรับ Windows x64
+> TermFlow 1.1.3 สำหรับ Windows x64
 
 ## Features
 
@@ -17,7 +17,8 @@
 - ตรวจ GitHub Releases และเปรียบเทียบเวอร์ชัน
 - สร้างโปรไฟล์ต่อเรื่องเพื่อจำไฟล์ SOURCE/VOCAB, จำนวนช่วงค้นหา และ Prompt ที่เลือก
 - ตรวจจับไฟล์ที่ถูกแก้จากโปรแกรมอื่น โหลดเนื้อหาใหม่ และแจ้งเมื่อผลเดิมล้าสมัย
-- ลากเลือกหลายช่องในตารางแล้วกด Ctrl+C เพื่อคัดลอกเฉพาะข้อมูลเป็น TSV
+- พื้นที่รายการศัพท์ธีมเข้ม ตัวอักษรใหญ่ขึ้น ลากเลือกข้อความแบบ VS Code และกด Ctrl+C เพื่อคัดลอก
+- ปรับขนาดตัวอักษรได้ใน Settings
 - แบ่ง SOURCE ได้ 1–20 ช่วง และค้นหาพร้อมกัน โดยใช้ Prompt A เดิมทุกคำ (ค่าเริ่มต้น 3 ช่วง เหมาะกับ SOURCE ราว 25,000 ตัวอักษร)
 - แสดงสถานะแยกแต่ละช่วง จำนวน NEW/UPDATE และเหตุผลเมื่อช่วงใดทำไม่สำเร็จ
 - ลองใหม่เฉพาะช่วงที่ล้มเหลว หรือยกเลิกคำขอที่กำลังทำงานได้
@@ -92,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
 ## Release Process
 
-อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.1.2` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
+อัปเดต `src/termflow/version.py`, `pyproject.toml` และค่า fallback ใน `installer/TermFlow.iss` ให้ตรงกัน จากนั้น push annotated tag ตามรุ่น เช่น `v1.1.3` workflow จะรันทดสอบ สร้าง installer, SHA-256 และ GitHub Release
 
 ## Troubleshooting
 
