@@ -13,8 +13,7 @@ class NovelProfile(BaseModel):
     name: str
     source_path: str = ""
     vocab_path: str = ""
-    search_chunks: int = 1
-    economy_version: int = 1
+    search_chunks: int = 3
     selected_search_prompt: str = "builtin-search"
     selected_polish_prompt: str = "builtin-polish"
 
@@ -35,13 +34,7 @@ def profiles_path() -> Path:
 
 def load_profiles() -> ProfileCollection:
     try:
-        import json
-        data = json.loads(profiles_path().read_text(encoding="utf-8"))
-        for profile in data.get("profiles", []):
-            if "economy_version" not in profile:
-                profile["search_chunks"] = 1
-                profile["economy_version"] = 1
-        return ProfileCollection.model_validate(data)
+        return ProfileCollection.model_validate_json(profiles_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ProfileCollection()
 

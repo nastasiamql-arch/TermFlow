@@ -7,10 +7,7 @@ EMPTY = "— ไม่มีรายการ —"
 SEX_VALUES = {"ชาย", "หญิง", "ยังไม่ยืนยัน", "-"}
 
 
-def validate_step_a(raw: str, *, flexible: bool = False) -> tuple[list[list[str]], list[list[str]]]:
-    if flexible:
-        from termflow.validators.formats import normalize_search
-        raw = normalize_search(raw)
+def validate_step_a(raw: str) -> tuple[list[list[str]], list[list[str]]]:
     errors: list[str] = []
     lines = raw.splitlines()
     # Prompt A's source of truth explicitly requires the structured result to
@@ -31,7 +28,7 @@ def validate_step_a(raw: str, *, flexible: bool = False) -> tuple[list[list[str]
     n, u = lines.index(NEW), lines.index(UPDATE)
     if n >= u:
         raise ValidationError(["Unexpected header order: NEW must precede UPDATE"])
-    if any(x.strip() for x in lines[:n]):
+    if any(not x.strip() for x in lines[:n] + lines[u + 1 :]):
         raise ValidationError(["Unexpected prose before or after structured result"])
     sections = (lines[n + 1 : u], lines[u + 1 :])
     parsed: list[list[list[str]]] = []

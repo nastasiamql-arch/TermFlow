@@ -20,11 +20,11 @@ def test_release_version_comparison():
     assert not is_newer("not-a-version", "1.2.0")
 
 
-def test_search_chunk_setting_defaults_to_one_and_loads_old_settings():
+def test_search_chunk_setting_defaults_to_three_and_loads_old_settings():
     from termflow.storage.settings import Settings
 
-    assert Settings().search_chunks == 1
-    assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 1
+    assert Settings().search_chunks == 3
+    assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 3
 
 
 def test_builtin_prompts_match_saved_text():

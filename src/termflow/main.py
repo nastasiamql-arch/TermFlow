@@ -5,7 +5,6 @@ import sys
 import tempfile
 from pathlib import Path
 from threading import Event
-from time import monotonic
 
 import httpx
 from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, QUrl, Signal
@@ -40,7 +39,7 @@ from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.logging_config import configure_logging
-from termflow.core.prompt_loader import import_prompt_text
+from termflow.core.prompts import list_prompts
 from termflow.core.search_batch import ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
 from termflow.core.search_chunks import split_source
 from termflow.core.search_export import format_step_a_result
@@ -60,16 +59,13 @@ from termflow.storage.profiles import (
 )
 from termflow.storage.settings import load_settings, save_settings
 from termflow.ui.copyable_table import CopyableTableWidget
-from termflow.ui.polish_review import PolishRemovalReview
-from termflow.ui.response_editor import ResponseEditor
+from termflow.ui.prompt_manager import PromptManagerDialog
 from termflow.ui.search_conflicts import ConflictResolutionDialog
 from termflow.ui.search_progress import MultiSearchWorker, SearchProgressDialog
 from termflow.updater.downloader import download
 from termflow.updater.github_releases import latest_release
 from termflow.updater.installer import launch_installer
 from termflow.updater.version_check import is_newer
-from termflow.validators.step_a_validator import validate_step_a
-from termflow.validators.step_b_validator import validate_step_b
 from termflow.version import __version__
 
 
@@ -85,7 +81,7 @@ class Worker(QObject):
         try:
             self.done.emit(self.provider.generate(self.request))
         except Exception as e:
-            self.failed.emit(str(e).replace(self.provider.api_key, "[REDACTED]") if self.provider.api_key else str(e))
+            self.failed.emit(str(e))
 
 
 class UpdateWorker(QObject):
@@ -227,24 +223,20 @@ class SettingsDialog(QDialog):
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.addItem(settings.model)
-        self.search_model = QLineEdit(settings.search_model)
-        self.polish_model = QLineEdit(settings.polish_model)
-        self.search_model.setPlaceholderText("ว่าง = ใช้ Default Model")
-        self.polish_model.setPlaceholderText("ว่าง = ใช้ Default Model")
-        self.reuse_results = QCheckBox("ใช้ผลเดิมที่ตรวจผ่านแล้วเมื่อข้อมูลและ Prompt เหมือนเดิม")
-        self.reuse_results.setChecked(settings.reuse_results)
         self.timeout = QLineEdit(str(settings.timeout))
         self.retries = QLineEdit(str(settings.retries))
         self.search_chunks = QComboBox()
         for count in range(1, 21):
             if count == 1:
-                label = "1 ช่วง · แนะนำสำหรับ SOURCE ไม่เกิน 16,000 ตัวอักษร"
+                label = "1 ช่วง · เหมาะกับไม่เกิน 10,000 ตัวอักษร"
             else:
-                label = f"{count} ช่วง · SOURCE รวมได้ไม่เกิน {count * 16_000:,} ตัวอักษร"
+                lower = count * 5_000
+                upper = count * 10_000
+                label = f"{count} ช่วง · เหมาะกับประมาณ {lower:,}–{upper:,} ตัวอักษร"
             self.search_chunks.addItem(label, count)
             self.search_chunks.setItemData(
                 self.search_chunks.count() - 1,
-                f"แบ่ง SOURCE เป็น {count} คำขอ · สูงสุด 16,000 ตัวอักษรต่อคำขอ รวมข้อความเหลื่อม",
+                f"แบ่ง SOURCE เป็น {count} คำขอ · โดยประมาณ {5_000:,}–{10_000:,} ตัวอักษรต่อช่วง",
                 Qt.ToolTipRole,
             )
         selected = self.search_chunks.findData(settings.search_chunks)
@@ -273,9 +265,6 @@ class SettingsDialog(QDialog):
         form.addRow("API Key", self.key)
         form.addRow("Base URL", self.base)
         form.addRow("Default Model", self.model)
-        form.addRow("Model หาศัพท์", self.search_model)
-        form.addRow("Model เกลา", self.polish_model)
-        form.addRow("ประหยัด API", self.reuse_results)
         form.addRow("Timeout (seconds)", self.timeout)
         form.addRow("Retries", self.retries)
         form.addRow("แบ่ง SOURCE", self.search_chunks)
@@ -292,19 +281,11 @@ class SettingsDialog(QDialog):
         form.addRow(row)
 
     def save(self):
-        try:
-            ProviderConfig(timeout=int(self.timeout.text()), retries=int(self.retries.text()))
-        except ValueError:
-            QMessageBox.warning(self, "Settings", "Timeout ต้องเป็น 5–600 วินาที และ Retries ต้องเป็น 0–10")
-            return
         s = self.settings
         s.provider = self.provider.currentText()
         s.credential_name = s.provider
         s.base_url = self.base.text().strip()
         s.model = self.model.currentText().strip()
-        s.search_model = self.search_model.text().strip()
-        s.polish_model = self.polish_model.text().strip()
-        s.reuse_results = self.reuse_results.isChecked()
         s.timeout = int(self.timeout.text())
         s.retries = int(self.retries.text())
         s.search_chunks = int(self.search_chunks.currentData())
@@ -444,14 +425,12 @@ class MainWindow(QMainWindow):
             save_profiles(self.profile_collection)
         self.profile = active
         self.settings.search_chunks = active.search_chunks
+        self.settings.selected_search_prompt = active.selected_search_prompt
+        self.settings.selected_polish_prompt = active.selected_polish_prompt
         self.apply_theme()
         self.workflow = Workflow()
         self.source_path = self.profile.source_path
         self.vocab_path = self.profile.vocab_path
-        self._request_timer = QTimer(self)
-        self._request_timer.setInterval(1000)
-        self._request_timer.timeout.connect(self.show_request_progress)
-        self._pending_retry = False
         self._thread = None
         self._search_thread = None
         self._search_worker = None
@@ -478,6 +457,7 @@ class MainWindow(QMainWindow):
             ("Open SOURCE", self.open_source),
             ("Open VOCAB", self.open_vocab),
             ("Settings", self.open_settings),
+            ("Prompt Manager", self.prompt_manager),
             ("History", self.history_dialog),
             ("Check for Updates", self.check_updates),
         ]:
@@ -485,17 +465,6 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             head.addWidget(b)
         layout.addLayout(head)
-        prompt_row = QHBoxLayout()
-        self.prompt_file_labels = {}
-        for step, label in (("A", "Prompt หาศัพท์"), ("B", "Prompt เกลา")):
-            button = QPushButton(f"Open {label}")
-            button.clicked.connect(lambda _checked=False, step=step: self.select_prompt_file(step))
-            prompt_row.addWidget(button)
-            file_label = QLabel()
-            self.prompt_file_labels[step] = file_label
-            prompt_row.addWidget(file_label, 1)
-        layout.addLayout(prompt_row)
-        self.refresh_prompt_files()
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         self.source_view = QPlainTextEdit()
@@ -626,6 +595,8 @@ class MainWindow(QMainWindow):
         self.profile = next(item for item in self.profile_collection.profiles if item.id == profile_id)
         self.profile_button.setText(f"เรื่อง: {self.profile.name}")
         self.settings.search_chunks = self.profile.search_chunks
+        self.settings.selected_search_prompt = self.profile.selected_search_prompt
+        self.settings.selected_polish_prompt = self.profile.selected_polish_prompt
         save_settings(self.settings)
         self.new_table.clear()
         self.update_table.clear()
@@ -637,7 +608,6 @@ class MainWindow(QMainWindow):
         self.vocab_path = self.profile.vocab_path
         self.workflow = Workflow()
         self.initialize_profile_files()
-        self.refresh_prompt_files()
         self.statusBar().showMessage(f"เปิดโปรไฟล์: {self.profile.name}")
 
     def initialize_profile_files(self):
@@ -739,14 +709,7 @@ class MainWindow(QMainWindow):
             self._apply_file_snapshot(kind, snapshot)
 
     def _after_ai_thread_finished(self):
-        for button in self.search_action_buttons.values():
-            button.setEnabled(True)
-        self._set_results_stale(self.results_stale)
-        self._request_timer.stop()
         QTimer.singleShot(0, self._finish_pending_file_refreshes)
-        if self._pending_retry:
-            self._pending_retry = False
-            QTimer.singleShot(0, self.retry_same_request)
 
     def _set_results_stale(self, stale):
         self.results_stale = stale
@@ -847,29 +810,13 @@ class MainWindow(QMainWindow):
 
     def prompt_file(self, step):
         category = "Search" if step == "A" else "Polish"
-        filename = self.settings.search_prompt_path if step == "A" else self.settings.polish_prompt_path
-        if not filename:
-            raise ValueError("เลือกไฟล์ Prompt จากปุ่ม Open Prompt หาศัพท์ / Open Prompt เกลา ก่อนใช้งาน")
-        text = import_prompt_text(Path(filename))
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        return {"id": f"shared-file-{step}", "name": Path(filename).name,
-                "category": category, "content": text, "version": digest[:12], "is_builtin": False}
-
-    def show_request_progress(self):
-        if self._thread and self._thread.isRunning():
-            elapsed = int(monotonic() - self._request_started)
-            self.statusBar().showMessage(f"กำลังเกลา · รอคำตอบ {elapsed} วินาที · กด Cancel เพื่อยกเลิก")
+        prompt_id = self.settings.selected_search_prompt if step == "A" else self.settings.selected_polish_prompt
+        return next((x for x in list_prompts() if x["id"] == prompt_id and x["category"] == category), None)
 
     def request(self, step, user_input=""):
-        if self._busy_with_ai():
-            return False
-        if not ((self.settings.search_model if step == "A" else self.settings.polish_model) or self.settings.model):
+        if not self.settings.model:
             self.open_settings()
             self.settings = load_settings()
-        model = (self.settings.search_model if step == "A" else self.settings.polish_model) or self.settings.model
-        if not model:
-            QMessageBox.warning(self, "Model", "เลือก Model ก่อนใช้งาน")
-            return False
         secret = get(self.settings.provider)
         if not secret:
             QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
@@ -877,7 +824,7 @@ class MainWindow(QMainWindow):
         try:
             selected_prompt = self.prompt_file(step)
             if not selected_prompt:
-                raise ValueError("เลือกไฟล์ Prompt จากปุ่ม Open Prompt ก่อนใช้งาน")
+                raise ValueError("Selected prompt is unavailable; open Prompt Manager and select a prompt.")
             prompt = selected_prompt["content"]
             if not prompt.strip():
                 raise ValueError("Selected prompt is empty.")
@@ -885,39 +832,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Prompt", str(e))
             return
         # Exact prompt text is passed unchanged as system prompt. The execution wrapper is separate user content.
-        wrapper = "Follow the exact system Prompt including its analysis and summary requirements. Do not write or modify files."
+        wrapper = "Return the requested result only. Do not write or modify files."
         if step == "B":
             wrapper += (
-                "\nUse the Prompt copy-ready TSV section, or a distinct section headed === COPY-READY TSV ===, with the polished rows "
-                "as CN<TAB>TH<TAB>NOTE. Process every input row according to the exact Prompt. "
-                "If the Prompt requires excluding rows, explain every excluded CN and reason in the analysis or summary. "
-                "Do not omit any row silently. Return an empty TSV code block when the Prompt excludes all rows."
+                "\nInclude a distinct section headed exactly: === COPY-READY TSV ===, followed only by the polished rows "
+                "as CN<TAB>TH<TAB>NOTE. Preserve one row for every input row."
             )
         request = GenerateRequest(
             prompt=prompt,
             source=self.source_view.toPlainText() if step == "A" else "",
             vocab=self.vocab_view.toPlainText(),
-            user_input=wrapper + ("\n\nINPUT TSV:\n" + user_input if user_input else ""),
-            validation_step=step,
-            allow_polish_removals=step == "B",
-            expected_rows=[line.split("\t") for line in user_input.splitlines()] if step == "B" else [],
-            reuse_result=self.settings.reuse_results,
+            user_input=wrapper + ("\n\n" + user_input if user_input else ""),
         )
         provider = create_provider(
             ProviderConfig(
                 provider=self.settings.provider,
-                model=model,
+                model=self.settings.model,
                 base_url=self.settings.base_url,
                 timeout=self.settings.timeout,
                 retries=self.settings.retries,
             ),
             secret,
         )
-        self._request_config = ProviderConfig(provider=self.settings.provider, model=model,
-                                              base_url=self.settings.base_url, timeout=self.settings.timeout, retries=self.settings.retries)
-        if step == "B":
-            self.workflow.begin_polish()
-            self.final_table.setRowCount(0)
         self._step = step
         self._prompt = prompt
         self._selected_prompt = selected_prompt
@@ -925,15 +861,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Searching..." if step == "A" else "Polishing...")
         self._provider = provider
         self.start_worker(provider, request)
-        return True
 
     def start_worker(self, provider, request):
         self.cancel_button.setVisible(True)
-        for button in self.search_action_buttons.values():
-            button.setEnabled(False)
-        self._request_started = monotonic()
-        self._request_timer.start()
-        self._thread = QThread(self)
+        self._thread = QThread()
         self._worker = Worker(provider, request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -941,8 +872,7 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self.on_error)
         self._worker.done.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
-        self._worker.done.connect(self._worker.deleteLater)
-        self._worker.failed.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._close_after_background_work)
         self._thread.finished.connect(self._after_ai_thread_finished)
         self._thread.start()
@@ -967,57 +897,48 @@ class MainWindow(QMainWindow):
             self.close()
 
     def run_search(self):
-        if self._busy_with_ai():
+        if self._search_thread and self._search_thread.isRunning():
             return
-        self.check_profile_files()
-        self._finish_pending_file_refreshes()
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
         if not self.workflow.source.strip():
             QMessageBox.information(self, "หาศัพท์", "เปิด SOURCE หรือวางเนื้อหาก่อนเริ่มค้นหา")
             return
-        if not (self.settings.search_model or self.settings.model):
+        if not self.settings.model:
             self.open_settings()
             self.settings = load_settings()
-        if not (self.settings.search_model or self.settings.model):
-            QMessageBox.information(self, "Model", "เลือก Model หาศัพท์ใน Settings ก่อนเริ่มค้นหา")
+        if not self.settings.model:
+            QMessageBox.information(self, "Model", "เลือก Default Model ใน Settings ก่อนเริ่มค้นหา")
             return
         api_key = get(self.settings.provider)
         if not api_key:
             QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
             return
-        try:
-            selected_prompt = self.prompt_file("A")
-        except Exception as exc:
-            QMessageBox.warning(self, "Prompt", f"อ่านไฟล์ Prompt ไม่ได้: {exc}")
-            return
+        selected_prompt = self.prompt_file("A")
         if not selected_prompt or not selected_prompt.get("content", "").strip():
-            QMessageBox.warning(self, "Prompt", "กรุณาเลือกไฟล์ Prompt จากปุ่ม Open Prompt หาศัพท์")
+            QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
             return
-        chunk_count = self.settings.search_chunks
         try:
-            chunks = split_source(self.workflow.source, count=chunk_count, overlap_units=1, max_request_chars=16_000)
             self.workflow.begin_search()
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", str(exc))
             return
-        self._search_batch = SearchBatch(chunks)
+        chunk_count = self.settings.search_chunks
+        self._search_batch = SearchBatch(split_source(self.workflow.source, count=chunk_count, overlap_units=1))
         self._search_prompt = selected_prompt["content"]
         self._search_selected_prompt = selected_prompt
         self._search_api_key = api_key
         self._search_config = ProviderConfig(
             provider=self.settings.provider,
-            model=self.settings.search_model or self.settings.model,
+            model=self.settings.model,
             base_url=self.settings.base_url,
             timeout=self.settings.timeout,
             retries=self.settings.retries,
-            reuse_results=self.settings.reuse_results,
         )
         if self.search_progress is None or self.search_progress.chunk_count != chunk_count:
             self.search_progress = SearchProgressDialog(self, chunk_count=chunk_count)
             self.search_progress.cancel_requested.connect(self.cancel_search_batch)
             self.search_progress.retry_requested.connect(self.retry_failed_chunks)
-            self.search_progress.response_edited.connect(self.accept_local_search_edit)
         self.search_progress.show()
         self._start_search_worker()
 
@@ -1067,17 +988,6 @@ class MainWindow(QMainWindow):
             pass
         self._start_search_worker()
 
-    def accept_local_search_edit(self, index, raw):
-        if self._busy_with_ai() or self.workflow.state.current != State.SEARCH_FAILED:
-            return
-        run = self._search_batch.runs[index - 1]
-        if run.status != ChunkStatus.FAILED:
-            return
-        validate_step_a(raw, flexible=True)
-        self._search_batch.revise_response(index, raw)
-        self.workflow.state.transition(State.SEARCH_RUNNING)
-        self.on_search_batch_finished(self._search_batch)
-
     def on_search_batch_error(self, message):
         self.cancel_button.setVisible(False)
         for button in self.search_action_buttons.values():
@@ -1102,7 +1012,6 @@ class MainWindow(QMainWindow):
             except ValueError:
                 pass
             self.statusBar().showMessage("บางช่วงค้นหาไม่สำเร็จ · กดลองช่วงที่ผิดพลาดอีกครั้ง")
-            self._save_search_batch_history([], [], passed=False)
             return
         if batch.cancellation_requested or any(run.status == ChunkStatus.CANCELLED for run in batch.runs):
             try:
@@ -1137,7 +1046,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Validation Failed")
             QMessageBox.warning(self, "รวมผลค้นหาไม่สำเร็จ", str(exc))
 
-    def _save_search_batch_history(self, new_rows, update_rows, *, passed=True):
+    def _save_search_batch_history(self, new_rows, update_rows):
         batch = self._search_batch
         input_text = self.workflow.source + self.workflow.vocab
         secret = self._search_api_key or ""
@@ -1166,10 +1075,7 @@ class MainWindow(QMainWindow):
                 "model": self._search_config.model,
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "parsed_result": {"new": new_rows, "update": update_rows},
-                "validation_result": {
-                    "passed": passed,
-                    "details": "All chunks passed." if passed else "Incomplete search · inspect chunk responses before retrying.",
-                },
+                "validation_result": {"passed": True, "details": "All non-empty source chunks passed strict STEP A validation."},
                 "chunks": [
                     {
                         "index": run.chunk.index,
@@ -1178,8 +1084,6 @@ class MainWindow(QMainWindow):
                         "input_sha256": hashlib.sha256(run.chunk.text.encode("utf-8")).hexdigest(),
                         "status": run.status.value,
                         "retry_count": run.retry_count,
-                        "usage": run.usage,
-                        "result_reused": run.result_reused,
                         "raw_response": run.raw_response,
                         "parsed_result": {"new": run.new_rows, "update": run.update_rows},
                         "validation_result": {"passed": run.status == ChunkStatus.COMPLETE, "details": run.error},
@@ -1218,10 +1122,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "บันทึกผลรวมไม่สำเร็จ", str(exc))
 
     def run_polish(self):
-        if self._busy_with_ai():
-            return
-        self.check_profile_files()
-        self._finish_pending_file_refreshes()
         if self.results_stale:
             QMessageBox.information(self, "Polish", "SOURCE หรือ VOCAB เปลี่ยนแล้ว กรุณา Run Search ใหม่ก่อนเกลาศัพท์")
             return
@@ -1234,10 +1134,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Polish", str(e))
             return
+        self.workflow.begin_polish()
         self.request("B", payload)
 
     def on_response(self, raw):
-        self._request_timer.stop()
         self.cancel_button.setVisible(False)
         try:
             if self._step == "A":
@@ -1250,20 +1150,11 @@ class MainWindow(QMainWindow):
                 valid = True
                 self.statusBar().showMessage("Search Complete")
             else:
-                final = self.workflow.accept_polish(raw, self._b_input(), allow_removals=self._request.allow_polish_removals)
-                if self.workflow.excluded_rows:
-                    review = PolishRemovalReview(self.workflow.excluded_rows, raw, len(final), self)
-                    if review.exec() != QDialog.Accepted:
-                        self.workflow.reject_polish_exclusions()
-                        self.save_current_snapshot(raw, {"validation_error": "ยังไม่ได้ยืนยันรายการที่ถูกตัด"}, False)
-                        self.statusBar().showMessage("ยังไม่ยืนยันแถวที่ตัด · กดเกลาใหม่ได้")
-                        return
-                    self.workflow.confirm_polish_exclusions()
+                final = self.workflow.accept_polish(raw, self._b_input())
                 self.fill_final_table(final)
                 parsed = final
                 valid = True
-                message = "Polish Complete · ใช้ผลเดิม ไม่เรียก API" if getattr(self._provider, "cache_hit", False) else "Polish Complete"
-                self.statusBar().showMessage(message)
+                self.statusBar().showMessage("Polish Complete")
         except Exception as e:
             valid = False
             parsed = []
@@ -1278,17 +1169,8 @@ class MainWindow(QMainWindow):
 
     def save_current_snapshot(self, raw, parsed, valid):
         input_text = self._request.user_input + self._request.source + self._request.vocab
-        def redact(value):
-            secret = self._provider.api_key
-            if isinstance(value, str):
-                return value.replace(secret, "[REDACTED]") if secret else value
-            if isinstance(value, dict):
-                return {key: redact(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [redact(item) for item in value]
-            return value
         save_snapshot(
-            redact({
+            {
                 "source_filename": Path(self.source_path).name if self.source_path else "",
                 "vocab_filename": Path(self.vocab_path).name if self.vocab_path else "",
                 "prompt_id": self._selected_prompt["id"],
@@ -1296,23 +1178,16 @@ class MainWindow(QMainWindow):
                 "prompt_version": self._selected_prompt["version"],
                 "exact_prompt_text": self._prompt,
                 "prompt_sha256": hashlib.sha256(self._prompt.encode("utf-8")).hexdigest(),
-                "provider": self._request_config.provider,
-                "model": self._request_config.model,
-                "usage": getattr(self._provider, "last_usage", {}),
-                "finish_reason": getattr(self._provider, "finish_reason", ""),
-                "result_reused": getattr(self._provider, "cache_hit", False),
-                "excluded_rows": self.workflow.excluded_rows if self._step == "B" else [],
-                "exclusions_confirmed": self.workflow.exclusions_confirmed if self._step == "B" else False,
-                "selected_input_rows": self._request.expected_rows,
+                "provider": self.settings.provider,
+                "model": self.settings.model,
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "raw_response": raw,
                 "parsed_result": parsed,
                 "validation_result": {"passed": valid, "details": parsed.get("validation_error", "") if isinstance(parsed, dict) else ""},
-            })
+            }
         )
 
     def on_error(self, msg):
-        self._request_timer.stop()
         self.cancel_button.setVisible(False)
         self.save_current_snapshot("", {"request_error": msg}, False)
         if msg == "Request cancelled":
@@ -1323,8 +1198,6 @@ class MainWindow(QMainWindow):
                 pass
             self.statusBar().showMessage("Cancelled")
             return
-        target = State.SEARCH_FAILED if self._step == "A" else State.POLISH_FAILED
-        self.workflow.state.transition(target)
         box = QMessageBox(self)
         box.setWindowTitle("Request failed")
         box.setText(f"Reason: {msg}")
@@ -1333,8 +1206,7 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() == retry:
             self.retry_same_request()
-        else:
-            self.statusBar().showMessage("Request failed")
+        self.statusBar().showMessage("Request failed")
 
     def cancel_request(self):
         if self._search_thread and self._search_thread.isRunning():
@@ -1345,14 +1217,23 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Cancelling request…")
 
     def retry_same_request(self):
-        if self._thread and self._thread.isRunning():
-            self._pending_retry = True
-            return
         target = State.SEARCH_RUNNING if self._step == "A" else State.POLISH_RUNNING
-        self.workflow.state.transition(target)
-        secret = get(self._request_config.provider) or ""
-        self._provider = create_provider(self._request_config, secret)
-        self._request = self._request.model_copy(update={"reuse_result": False})
+        try:
+            self.workflow.state.transition(target)
+        except ValueError:
+            self.workflow.state.current = State.USER_REVIEW if self._step == "A" else State.POLISH_READY
+            self.workflow.state.transition(target)
+        secret = get(self.settings.provider) or ""
+        self._provider = create_provider(
+            ProviderConfig(
+                provider=self.settings.provider,
+                model=self.settings.model,
+                base_url=self.settings.base_url,
+                timeout=self.settings.timeout,
+                retries=self.settings.retries,
+            ),
+            secret,
+        )
         self.start_worker(self._provider, self._request)
 
     def validation_failure(self, details, raw):
@@ -1363,7 +1244,6 @@ class MainWindow(QMainWindow):
         retry = box.addButton("Retry Same Request", QMessageBox.AcceptRole)
         view = box.addButton("View Raw Response", QMessageBox.ActionRole)
         copy = box.addButton("Copy Raw Response", QMessageBox.ActionRole)
-        edit = box.addButton("แก้ผลเดิม · ไม่เรียก API", QMessageBox.ActionRole)
         box.addButton("Close", QMessageBox.RejectRole)
         box.exec()
         if box.clickedButton() == retry:
@@ -1379,20 +1259,6 @@ class MainWindow(QMainWindow):
             dialog.exec()
         elif box.clickedButton() == copy:
             QApplication.clipboard().setText(raw)
-        elif box.clickedButton() == edit:
-            def validator(value):
-                if self._step == "A":
-                    return validate_step_a(value, flexible=True)
-                return validate_step_b(value, [row.b_input.split("\t") for row in self.workflow.adapted],
-                                       allow_removals=self._request.allow_polish_removals, flexible=True)
-            dialog = ResponseEditor(raw, validator, self)
-            if dialog.exec() == QDialog.Accepted:
-                if self._step == "A":
-                    self.workflow.begin_search()
-                else:
-                    self.workflow.begin_polish()
-                self.save_current_snapshot(raw, {"original_before_user_edit": True}, False)
-                self.on_response(dialog.editor.toPlainText())
 
     def fill_table(self, table, rows):
         table.fill_rows(rows)
@@ -1411,9 +1277,6 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText("\n".join(lines))
 
     def copy_final(self, selected=False):
-        if self.workflow.state.current != State.FINAL_READY or self.results_stale:
-            QMessageBox.information(self, "Final Result", "ต้องเกลาและยืนยันรายการที่ถูกตัดให้เรียบร้อยก่อน Copy")
-            return
         indexes = {index.row() for index in self.final_table.selectionModel().selectedRows()} if selected else set()
         rows = [
             [self.final_table.item(row, col).text() for col in range(4)]
@@ -1424,9 +1287,6 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(value)
 
     def copy_step_a_format(self):
-        if self.workflow.state.current != State.FINAL_READY or self.results_stale:
-            QMessageBox.information(self, "Final Result", "ต้องเกลาและยืนยันรายการที่ถูกตัดให้เรียบร้อยก่อน Copy")
-            return
         rows = ["\t".join(self.final_table.item(row, col).text() for col in range(4)) for row in range(self.final_table.rowCount())]
         value = "=== คำศัพท์ใหม่ ===\n" + ("\n".join(rows) if rows else "— ไม่มีรายการ —")
         value += "\n\n=== คำศัพท์อัปเดต ===\n— ไม่มีรายการ —"
@@ -1440,8 +1300,6 @@ class MainWindow(QMainWindow):
         self.final_table.resizeColumnsToContents()
 
     def new_session(self):
-        if self._busy_with_ai():
-            return
         self.workflow = Workflow()
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
@@ -1458,38 +1316,18 @@ class MainWindow(QMainWindow):
             self._save_profile_state()
             self.apply_theme()
 
-    def refresh_prompt_files(self):
-        for step, label in self.prompt_file_labels.items():
-            filename = self.settings.search_prompt_path if step == "A" else self.settings.polish_prompt_path
-            label.setText(Path(filename).name if filename else "ยังไม่ได้เลือกไฟล์")
-            label.setToolTip(f"ใช้ร่วมกันทุกโปรไฟล์\n{filename}" if filename else "เลือกไฟล์ .md / .txt / .docx")
-
-    def select_prompt_file(self, step):
-        if self._busy_with_ai():
-            QMessageBox.information(self, "Prompt", "รอคำขอที่กำลังทำงานจบก่อนเปลี่ยนไฟล์ Prompt")
-            return
-        filename, _ = QFileDialog.getOpenFileName(self, "เลือกไฟล์ Prompt · ใช้ร่วมกันทุกโปรไฟล์", "",
-                                                "Prompt (*.md *.txt *.docx)")
-        if not filename:
-            return
-        try:
-            import_prompt_text(Path(filename))
-        except Exception as exc:
-            QMessageBox.warning(self, "Prompt", f"ใช้ไฟล์นี้ไม่ได้: {exc}")
-            return
-        if step == "A":
-            self.settings.search_prompt_path = str(Path(filename).resolve())
-            self._mark_results_stale()
-        else:
-            self.settings.polish_prompt_path = str(Path(filename).resolve())
-        save_settings(self.settings)
-        self.refresh_prompt_files()
-        self.statusBar().showMessage("เปลี่ยนไฟล์ Prompt แล้ว · ทุกโปรไฟล์ใช้ร่วมกัน · อ่านไฟล์ล่าสุดก่อนรันทุกครั้ง")
+    def prompt_manager(self):
+        dialog = PromptManagerDialog(self)
+        if dialog.exec() and dialog.selected_prompt:
+            prompt = dialog.selected_prompt
+            if prompt["category"] == "Search":
+                self.settings.selected_search_prompt = prompt["id"]
+            else:
+                self.settings.selected_polish_prompt = prompt["id"]
+            save_settings(self.settings)
+            self._save_profile_state()
 
     def history_dialog(self):
-        if self._busy_with_ai():
-            QMessageBox.information(self, "History", "รอคำขอ AI จบก่อนเปิดผลเก่า")
-            return
         entries = list_history()
         if not entries:
             QMessageBox.information(self, "History", "No history yet")
@@ -1500,20 +1338,6 @@ class MainWindow(QMainWindow):
             if entry:
                 parsed = entry.get("parsed_result", {})
                 if isinstance(parsed, list):
-                    if not entry.get("validation_result", {}).get("passed"):
-                        QMessageBox.warning(self, "History", "ผลนี้ยังไม่ผ่านการตรวจ ไม่สามารถเปิดเป็น Final Result")
-                        return
-                    if entry.get("excluded_rows") and not entry.get("exclusions_confirmed"):
-                        QMessageBox.warning(self, "History", "รายการที่ถูกตัดยังไม่ได้รับการยืนยัน")
-                        return
-                    restored = Workflow()
-                    try:
-                        restored.restore_final_snapshot(parsed)
-                    except Exception as exc:
-                        QMessageBox.warning(self, "History", str(exc))
-                        return
-                    self.workflow = restored
-                    self._set_results_stale(False)
                     self.fill_final_table(parsed)
                 elif isinstance(parsed, dict):
                     self.fill_table(self.new_table, parsed.get("new", []))
@@ -1622,6 +1446,7 @@ class MainWindow(QMainWindow):
 def main():
     if "--check-prompts" in sys.argv:
         from termflow.core.prompts import list_prompts
+
         prompts = list_prompts()
         sys.exit(0 if {item["id"] for item in prompts} >= {"builtin-search", "builtin-polish"} else 1)
     if "--remove-user-data" in sys.argv:

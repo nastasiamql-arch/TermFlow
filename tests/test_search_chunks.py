@@ -1,29 +1,6 @@
 from termflow.core.search_chunks import _PARAGRAPH_BREAK, split_source
 
 
-def test_request_limit_preserves_all_source_and_caps_overlap():
-    for count in (1, 2, 3, 10, 20):
-        for length in (count * 16_000, count * 16_000 - 123):
-            source = ("段落\n\n" * (length // 4 + 1))[:length]
-            chunks = split_source(source, count=count, max_request_chars=16_000)
-            assert len(chunks) == count
-            assert all(len(chunk.text) <= 16_000 for chunk in chunks)
-            assert "".join(source[chunk.core_start:chunk.core_end] for chunk in chunks) == source
-
-
-def test_unbalanced_paragraphs_cannot_make_a_request_exceed_limit():
-    source = "文" * 19_000 + "\n\n" + "文" * 6_000
-    chunks = split_source(source, count=2, max_request_chars=16_000)
-    assert all(len(chunk.text) <= 16_000 for chunk in chunks)
-    assert "".join(source[chunk.core_start:chunk.core_end] for chunk in chunks) == source
-
-
-def test_insufficient_chunk_count_reports_required_count():
-    import pytest
-    with pytest.raises(ValueError, match="เลือกอย่างน้อย 3 ช่วง"):
-        split_source("文" * 32_001, count=2, max_request_chars=16_000)
-
-
 def test_split_source_returns_ten_ordered_chunks_and_exact_core_coverage():
     source = "\n\n".join(f"paragraph {i} 林雪" for i in range(30))
 

@@ -13,15 +13,9 @@ class Settings(BaseModel):
     model: str = ""
     selected_search_prompt: str = "builtin-search"
     selected_polish_prompt: str = "builtin-polish"
-    search_prompt_path: str = ""
-    polish_prompt_path: str = ""
     timeout: int = 90
-    retries: int = 0
-    search_chunks: int = 1
-    economy_version: int = 1
-    search_model: str = ""
-    polish_model: str = ""
-    reuse_results: bool = True
+    retries: int = 2
+    search_chunks: int = 3
     font_size: int = 12
     check_updates_on_startup: bool = True
     show_welcome: bool = True
@@ -36,11 +30,6 @@ def settings_path() -> Path:
 def load_settings() -> Settings:
     try:
         settings = Settings.model_validate_json(settings_path().read_text("utf-8"))
-        import json
-        if "economy_version" not in json.loads(settings_path().read_text("utf-8")):
-            settings.search_chunks = 1
-            settings.retries = 0
-            save_settings(settings)
         # 11 pt was the previous default and rendered too small on common displays.
         if settings.font_size == 11:
             settings.font_size = 12

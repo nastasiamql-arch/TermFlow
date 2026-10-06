@@ -27,7 +27,7 @@ def _preferred_boundaries(source: str, needed: int) -> list[int]:
     return lines if len(lines) >= needed else []
 
 
-def _core_boundaries(source: str, count: int, natural: list[int], max_chars: int | None = None) -> list[int]:
+def _core_boundaries(source: str, count: int, natural: list[int]) -> list[int]:
     length = len(source)
     if length < count:
         return [round(index * length / count) for index in range(count + 1)]
@@ -37,9 +37,6 @@ def _core_boundaries(source: str, count: int, natural: list[int], max_chars: int
         target = round(index * length / count)
         lower = boundaries[-1] + 1
         upper = length - (count - index)
-        if max_chars is not None:
-            lower = max(lower, length - (count - index) * max_chars)
-            upper = min(upper, boundaries[-1] + max_chars)
         options = [point for point in natural if lower <= point <= upper]
         point = min(options, key=lambda value: (abs(value - target), value)) if options else min(max(target, lower), upper)
         boundaries.append(point)
@@ -63,7 +60,7 @@ def _request_bounds(core_start: int, core_end: int, boundaries: list[int], lengt
     return min(request_start, core_start), max(request_end, core_end)
 
 
-def split_source(source: str, count: int = 10, overlap_units: int = 1, *, max_request_chars: int | None = None) -> list[SourceChunk]:
+def split_source(source: str, count: int = 10, overlap_units: int = 1) -> list[SourceChunk]:
     """Split SOURCE into balanced, ordered core ranges with small context overlap.
 
     Paragraph breaks are preferred, line breaks are used when there are too
@@ -77,27 +74,11 @@ def split_source(source: str, count: int = 10, overlap_units: int = 1, *, max_re
         raise ValueError("overlap_units cannot be negative")
 
     length = len(source)
-    if max_request_chars is not None:
-        if max_request_chars < 1:
-            raise ValueError("max_request_chars must be positive")
-        if length > count * max_request_chars:
-            needed = (length + max_request_chars - 1) // max_request_chars
-            raise ValueError(
-                f"SOURCE มี {length:,} ตัวอักษร · เลือก {count} ช่วงยังไม่พอ\n"
-                f"เลือกอย่างน้อย {needed} ช่วงใน Settings เพื่อให้แต่ละคำขอไม่เกิน {max_request_chars:,} ตัวอักษร"
-            )
     natural = _preferred_boundaries(source, count - 1)
-    cores = _core_boundaries(source, count, natural, max_request_chars)
+    cores = _core_boundaries(source, count, natural)
     chunks = []
     for index, (core_start, core_end) in enumerate(zip(cores, cores[1:]), start=1):
         request_start, request_end = _request_bounds(core_start, core_end, natural, length, overlap_units)
-        if max_request_chars is not None:
-            # Reduce context overlap when necessary; never remove core SOURCE.
-            budget = max_request_chars - (core_end - core_start)
-            before = min(core_start - request_start, budget // 2)
-            after = min(request_end - core_end, budget - before)
-            before = min(core_start - request_start, budget - after)
-            request_start, request_end = core_start - before, core_end + after
         chunks.append(
             SourceChunk(
                 index=index,

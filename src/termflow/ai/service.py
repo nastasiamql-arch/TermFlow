@@ -2,10 +2,6 @@ import httpx
 from pydantic import BaseModel, Field
 
 from termflow.ai.base import AIProvider, GenerateRequest
-from termflow.core.errors import ValidationError
-from termflow.core.result_cache import cache_key, read_result, write_result
-from termflow.validators.step_a_validator import validate_step_a
-from termflow.validators.step_b_validator import validate_step_b
 
 
 class ProviderConfig(BaseModel):
@@ -14,7 +10,6 @@ class ProviderConfig(BaseModel):
     base_url: str = ""
     timeout: int = Field(default=90, ge=5, le=600)
     retries: int = Field(default=2, ge=0, le=10)
-    reuse_results: bool = True
 
 
 class HTTPProvider(AIProvider):
@@ -37,35 +32,10 @@ class HTTPProvider(AIProvider):
         return {"Authorization": f"Bearer {self.api_key}", **h}
 
     def generate(self, request: GenerateRequest) -> str:
-        self.last_usage = {}
-        self.cache_hit = False
-        self.finish_reason = ""
-        self.check_cancelled()
-        key = cache_key(request, self)
-        if request.validation_step and request.reuse_result:
-            cached = read_result(key)
-            if cached is not None:
-                try:
-                    self._validate(cached, request)
-                except (ValueError, ValidationError):
-                    pass
-                else:
-                    self.cache_hit = True
-                    return cached
         for attempt in range(self.retries + 1):
             self.check_cancelled()
             try:
-                raw = self._generate_once(request)
-                self.check_cancelled()
-                if request.validation_step:
-                    try:
-                        self._validate(raw, request)
-                    except (ValueError, ValidationError):
-                        pass
-                    else:
-                        if self.api_key and self.api_key not in raw and self.api_key not in request.model_dump_json():
-                            write_result(key, raw)
-                return raw
+                return self._generate_once(request)
             except InterruptedError:
                 raise
             except httpx.HTTPStatusError as exc:
@@ -82,13 +52,6 @@ class HTTPProvider(AIProvider):
                 self._wait_before_retry(attempt)
         raise RuntimeError("Request failed after retry limit")
 
-    @staticmethod
-    def _validate(raw, request):
-        if request.validation_step == "A":
-            validate_step_a(raw, flexible=True)
-        elif request.validation_step == "B":
-            validate_step_b(raw, request.expected_rows, allow_removals=request.allow_polish_removals, flexible=True)
-
     def _wait_before_retry(self, attempt: int) -> None:
         delay = min(2**attempt, 30)
         self.cancelled.wait(delay)
@@ -98,9 +61,9 @@ class HTTPProvider(AIProvider):
         user = "\n\n".join(
             x
             for x in (
-                "VOCAB (READ ONLY):\n" + request.vocab if request.vocab else "",
                 request.user_input,
                 "SOURCE:\n" + request.source if request.source else "",
+                "VOCAB (READ ONLY):\n" + request.vocab if request.vocab else "",
             )
             if x
         )
@@ -128,15 +91,11 @@ class HTTPProvider(AIProvider):
                 self._active_client = None
             response.raise_for_status()
             data = response.json()
-            self.last_usage = data.get("usage", data.get("usageMetadata", {}))
         try:
             if self.kind == "anthropic":
-                self.finish_reason = data.get("stop_reason", "")
                 return "".join(x["text"] for x in data["content"] if x.get("type") == "text")
             if self.kind == "gemini":
-                self.finish_reason = data["candidates"][0].get("finishReason", "")
                 return "".join(x["text"] for x in data["candidates"][0]["content"]["parts"])
-            self.finish_reason = data["choices"][0].get("finish_reason", "")
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError("Provider returned an unsupported response format") from exc

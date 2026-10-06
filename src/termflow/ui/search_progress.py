@@ -5,8 +5,6 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableW
 
 from termflow.core.search_batch import SearchBatch
 from termflow.core.search_coordinator import SearchCoordinator
-from termflow.ui.response_editor import ResponseEditor
-from termflow.validators.step_a_validator import validate_step_a
 
 
 class MultiSearchWorker(QObject):
@@ -46,7 +44,6 @@ class MultiSearchWorker(QObject):
 class SearchProgressDialog(QDialog):
     cancel_requested = Signal()
     retry_requested = Signal()
-    response_edited = Signal(int, str)
 
     LABELS = {
         "pending": "รอทำงาน",
@@ -87,27 +84,6 @@ class SearchProgressDialog(QDialog):
         buttons.addWidget(self.close_button)
         layout.addLayout(buttons)
         self.active = True
-        self.batch = None
-        self.edit = QPushButton("ดู / แก้ผลช่วงที่เลือก · ไม่เรียก API")
-        self.edit.setEnabled(False)
-        buttons.insertWidget(0, self.edit)
-        self.edit.clicked.connect(self.edit_response)
-
-    def edit_response(self):
-        index = self.table.currentRow()
-        if self.active or self.batch is None or index < 0:
-            return
-        run = self.batch.runs[index]
-        if not run.raw_response:
-            return
-        if run.status.value != "failed":
-            dialog = ResponseEditor(run.raw_response, lambda _: None, self)
-            dialog.editor.setReadOnly(True)
-            dialog.exec()
-            return
-        dialog = ResponseEditor(run.raw_response, lambda raw: validate_step_a(raw, flexible=True), self)
-        if dialog.exec() == QDialog.Accepted:
-            self.response_edited.emit(run.chunk.index, dialog.editor.toPlainText())
 
     def update_chunk(self, index, status, message, new_count, update_count):
         row = index - 1
@@ -129,13 +105,9 @@ class SearchProgressDialog(QDialog):
         self.retry.setEnabled(not self.active and failed > 0)
 
     def set_batch(self, batch):
-        self.batch = batch
         for run in batch.runs:
             self.update_chunk(run.chunk.index, run.status.value, run.error, len(run.new_rows), len(run.update_rows))
         self.active = False
-        self.edit.setEnabled(True)
-        if self.table.currentRow() < 0:
-            self.table.selectRow(0)
         self.close_button.setText("ปิด")
         self.refresh_summary(batch)
 
@@ -143,7 +115,6 @@ class SearchProgressDialog(QDialog):
         self.active = active
         self.close_button.setText("ยกเลิก" if active else "ปิด")
         if active:
-            self.edit.setEnabled(False)
             self.retry.setEnabled(False)
 
     def _close_or_cancel(self):
