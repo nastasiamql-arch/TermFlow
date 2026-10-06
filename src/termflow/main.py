@@ -40,6 +40,7 @@ from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.logging_config import configure_logging
+from termflow.core.prompt_loader import import_prompt_text
 from termflow.core.prompts import list_prompts
 from termflow.core.search_batch import ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
 from termflow.core.search_chunks import split_source
@@ -443,8 +444,6 @@ class MainWindow(QMainWindow):
             save_profiles(self.profile_collection)
         self.profile = active
         self.settings.search_chunks = active.search_chunks
-        self.settings.selected_search_prompt = active.selected_search_prompt
-        self.settings.selected_polish_prompt = active.selected_polish_prompt
         self.apply_theme()
         self.workflow = Workflow()
         self.source_path = self.profile.source_path
@@ -489,15 +488,19 @@ class MainWindow(QMainWindow):
         layout.addLayout(head)
         prompt_row = QHBoxLayout()
         self.prompt_choices = {}
+        self.prompt_file_labels = {}
         for step, label in (("A", "Prompt หาศัพท์"), ("B", "Prompt เกลา")):
             prompt_row.addWidget(QLabel(label))
             combo = QComboBox()
             combo.setMinimumWidth(210)
             self.prompt_choices[step] = combo
             combo.currentIndexChanged.connect(lambda _index, step=step: self.choose_prompt(step))
-            prompt_row.addWidget(combo, 1)
-            button = QPushButton("นำเข้า / แก้ไข")
-            button.clicked.connect(lambda _checked=False, step=step: self.prompt_manager(step))
+            combo.hide()
+            file_label = QLabel()
+            self.prompt_file_labels[step] = file_label
+            prompt_row.addWidget(file_label, 1)
+            button = QPushButton("เลือกไฟล์แทนของเดิม")
+            button.clicked.connect(lambda _checked=False, step=step: self.select_prompt_file(step))
             prompt_row.addWidget(button)
         layout.addLayout(prompt_row)
         self.refresh_prompt_choices()
@@ -631,8 +634,6 @@ class MainWindow(QMainWindow):
         self.profile = next(item for item in self.profile_collection.profiles if item.id == profile_id)
         self.profile_button.setText(f"เรื่อง: {self.profile.name}")
         self.settings.search_chunks = self.profile.search_chunks
-        self.settings.selected_search_prompt = self.profile.selected_search_prompt
-        self.settings.selected_polish_prompt = self.profile.selected_polish_prompt
         save_settings(self.settings)
         self.new_table.clear()
         self.update_table.clear()
@@ -856,6 +857,12 @@ class MainWindow(QMainWindow):
 
     def prompt_file(self, step):
         category = "Search" if step == "A" else "Polish"
+        filename = self.settings.search_prompt_path if step == "A" else self.settings.polish_prompt_path
+        if filename:
+            text = import_prompt_text(Path(filename))
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            return {"id": f"shared-file-{step}", "name": Path(filename).name,
+                    "category": category, "content": text, "version": digest[:12], "is_builtin": False}
         prompt_id = self.settings.selected_search_prompt if step == "A" else self.settings.selected_polish_prompt
         return next((x for x in list_prompts() if x["id"] == prompt_id and x["category"] == category), None)
 
@@ -991,7 +998,11 @@ class MainWindow(QMainWindow):
         if not api_key:
             QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
             return
-        selected_prompt = self.prompt_file("A")
+        try:
+            selected_prompt = self.prompt_file("A")
+        except Exception as exc:
+            QMessageBox.warning(self, "Prompt", f"อ่านไฟล์ Prompt ไม่ได้: {exc}")
+            return
         if not selected_prompt or not selected_prompt.get("content", "").strip():
             QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
             return
@@ -1423,6 +1434,31 @@ class MainWindow(QMainWindow):
                     combo.addItem(f"{prompt['name']} · v{prompt['version']}", prompt["id"])
             combo.setCurrentIndex(combo.findData(prompt_id))
             combo.blockSignals(False)
+            filename = self.settings.search_prompt_path if step == "A" else self.settings.polish_prompt_path
+            self.prompt_file_labels[step].setText(Path(filename).name if filename else combo.currentText())
+            self.prompt_file_labels[step].setToolTip(filename or "ใช้ Prompt ในโปรแกรม · ทุกโปรไฟล์ใช้ร่วมกัน")
+
+    def select_prompt_file(self, step):
+        if self._busy_with_ai():
+            QMessageBox.information(self, "Prompt", "รอคำขอที่กำลังทำงานจบก่อนเปลี่ยนไฟล์ Prompt")
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "เลือกไฟล์ Prompt · ใช้ร่วมกันทุกโปรไฟล์", "",
+                                                "Prompt (*.md *.txt *.docx)")
+        if not filename:
+            return
+        try:
+            import_prompt_text(Path(filename))
+        except Exception as exc:
+            QMessageBox.warning(self, "Prompt", f"ใช้ไฟล์นี้ไม่ได้: {exc}")
+            return
+        if step == "A":
+            self.settings.search_prompt_path = str(Path(filename).resolve())
+            self._mark_results_stale()
+        else:
+            self.settings.polish_prompt_path = str(Path(filename).resolve())
+        save_settings(self.settings)
+        self.refresh_prompt_choices()
+        self.statusBar().showMessage("เปลี่ยนไฟล์ Prompt แล้ว · ทุกโปรไฟล์ใช้ร่วมกัน · อ่านไฟล์ล่าสุดก่อนรันทุกครั้ง")
 
     def choose_prompt(self, step):
         prompt_id = self.prompt_choices[step].currentData()
@@ -1430,9 +1466,11 @@ class MainWindow(QMainWindow):
             return
         if step == "A":
             self.settings.selected_search_prompt = prompt_id
+            self.settings.search_prompt_path = ""
             self._mark_results_stale()
         else:
             self.settings.selected_polish_prompt = prompt_id
+            self.settings.polish_prompt_path = ""
         save_settings(self.settings)
         self._save_profile_state()
 
@@ -1443,9 +1481,11 @@ class MainWindow(QMainWindow):
             prompt = dialog.selected_prompt
             if prompt["category"] == "Search":
                 self.settings.selected_search_prompt = prompt["id"]
+                self.settings.search_prompt_path = ""
                 self._mark_results_stale()
             else:
                 self.settings.selected_polish_prompt = prompt["id"]
+                self.settings.polish_prompt_path = ""
             save_settings(self.settings)
             self._save_profile_state()
         self.refresh_prompt_choices()

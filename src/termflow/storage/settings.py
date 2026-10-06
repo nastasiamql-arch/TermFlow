@@ -13,6 +13,8 @@ class Settings(BaseModel):
     model: str = ""
     selected_search_prompt: str = "builtin-search"
     selected_polish_prompt: str = "builtin-polish"
+    search_prompt_path: str = ""
+    polish_prompt_path: str = ""
     timeout: int = 90
     retries: int = 0
     search_chunks: int = 1

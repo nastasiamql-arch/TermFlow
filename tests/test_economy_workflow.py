@@ -1,3 +1,4 @@
+from pathlib import Path
 from time import monotonic, sleep
 from zipfile import ZipFile
 
@@ -187,3 +188,31 @@ def test_prompt_selection_is_used_in_actual_polish_request(window, monkeypatch):
     assert "INPUT TSV:" in requests[0].user_input
     saved = prompts.list_prompts()
     assert next(item for item in saved if item["id"] == prompt["id"])["content"] == requests[0].prompt
+
+
+def test_shared_prompt_files_survive_profile_switch_and_read_external_changes(window, tmp_path, monkeypatch):
+    import termflow.main as main
+    from termflow.storage.profiles import create_profile
+    win, _app = window
+    for step, content in (("A", "EXACT Prompt A\r\n中文"), ("B", "EXACT Prompt B\r\nภาษาไทย")):
+        path = tmp_path / f"prompt-{step}.md"
+        path.write_bytes(content.encode("utf-8"))
+        monkeypatch.setattr(main.QFileDialog, "getOpenFileName", lambda *_args, path=path: (str(path), ""))
+        win.select_prompt_file(step)
+        assert win.prompt_file(step)["content"] == content
+    other = create_profile("Other novel")
+    win.switch_profile(other.id)
+    assert win.prompt_file("A")["content"] == "EXACT Prompt A\r\n中文"
+    assert win.prompt_file("B")["content"] == "EXACT Prompt B\r\nภาษาไทย"
+    old = win.prompt_file("B")
+    Path(win.settings.polish_prompt_path).write_bytes("UPDATED B\nไม่ย่อ".encode("utf-8"))
+    current = win.prompt_file("B")
+    assert current["content"] == "UPDATED B\nไม่ย่อ"
+    assert current["version"] != old["version"]
+
+
+def test_missing_shared_prompt_file_does_not_fall_back_to_builtin(window, tmp_path):
+    win, _app = window
+    win.settings.search_prompt_path = str(tmp_path / "missing.md")
+    with pytest.raises(Exception, match="Prompt"):
+        win.prompt_file("A")
