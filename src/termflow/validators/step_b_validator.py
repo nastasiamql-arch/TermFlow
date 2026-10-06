@@ -8,7 +8,7 @@ COPY_READY = "=== COPY-READY TSV ==="
 
 def validate_step_b(raw: str, input_rows: list[list[str]]) -> list[list[str]]:
     # Analysis is allowed, but the copy-ready region must be clearly delimited.
-    heading = r"(?m)^[ \t]*(?:#{1,6}[ \t]+)?(?:=== COPY-READY TSV ===|(?:ส่วนที่[ \t]*3:[ \t]*)?ผลลัพธ์ TSV[^\n]*)[ \t]*$"
+    heading = r"(?m)^[ \t]*(?:#{1,6}[ \t]+)?(?:=== COPY-READY TSV ===|(?:ส่วนที่[ \t]*3:[ \t]*)?ผลลัพธ์ TSV[^\n]*)[ \t]*\r?$"
     markers = list(re.finditer(heading, raw))
     if len(markers) > 1:
         raise ValidationError(["Expected exactly one copy-ready TSV section"])

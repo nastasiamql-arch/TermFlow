@@ -107,14 +107,15 @@ def test_step_b_accepts_plain_tsv_and_rejects_second_unmarked_block():
 
 
 @pytest.mark.parametrize("prefix", ["# ", "## ", "### ", "###### "])
-def test_step_b_extracts_copy_ready_heading_with_markdown_prefix(prefix):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_step_b_extracts_copy_ready_heading_with_markdown_prefix(prefix, newline):
     rows = [["CN1", "TH1", "NOTE1"], ["CN2", "TH2", "NOTE2"], ["CN3", "TH3", "NOTE3"]]
     raw = (
         "[Genre: XIANXIA]\n\n## วิเคราะห์\n| CN | เปลี่ยนแปลง |\n|---|---|\n| CN1 | คงเดิม |\n"
         "## สรุปการเปลี่ยนแปลง\nสรุป: แก้ไข 1 / 3 บรรทัด\n\n"
         + prefix + COPY_READY + "\n\n```tsv\n" + "\n".join("\t".join(row) for row in rows) + "\n```"
     )
-    assert validate_step_b(raw, rows) == rows
+    assert validate_step_b(raw.replace("\n", newline), rows) == rows
 
 
 def test_step_b_markdown_heading_still_rejects_missing_and_unknown_cn():
