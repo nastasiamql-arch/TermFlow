@@ -9,6 +9,7 @@ from termflow.ai.base import GenerateRequest
 from termflow.ai.service import HTTPProvider
 from termflow.core.prompt_loader import import_prompt_text
 from termflow.core.state_machine import State
+from termflow.storage.paths import PROMPTS
 
 
 def test_cache_reuses_only_valid_exact_requests(tmp_path, monkeypatch):
@@ -71,7 +72,9 @@ def window(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "APPDATA", tmp_path)
     monkeypatch.setattr(cache, "LOCAL", tmp_path)
     monkeypatch.setattr(main, "load_settings", lambda: settings.Settings(show_welcome=False, check_updates_on_startup=False,
-                                                                        model="test", polish_model="polish-test"))
+                                                                        model="test", polish_model="polish-test",
+                                                               search_prompt_path=str(PROMPTS / "search/vocab_extractor_v3.md"),
+                                                                        polish_prompt_path=str(PROMPTS / "polish/polish_glossary.md")))
     monkeypatch.setattr(main, "get", lambda _provider: "secret")
     win = main.MainWindow()
     yield win, app
@@ -200,23 +203,24 @@ def test_search_can_restart_after_final_without_direct_state_assignment():
     assert workflow.state.current == State.SEARCH_RUNNING
 
 
-def test_prompt_selection_is_used_in_actual_polish_request(window, monkeypatch):
-    import termflow.core.prompts as prompts
+def test_prompt_selection_is_used_in_actual_polish_request(window, tmp_path, monkeypatch):
+    import termflow.main as main
     win, _app = window
-    prompt = prompts.create_prompt("updated B", "Polish", "EXACT updated Prompt B\nไม่ย่อ")
-    win.refresh_prompt_choices()
-    win.prompt_choices["B"].setCurrentIndex(win.prompt_choices["B"].findData(prompt["id"]))
+    path = tmp_path / "updated-B.md"
+    content = "EXACT updated Prompt B\nไม่ย่อ"
+    path.write_bytes(content.encode("utf-8"))
+    monkeypatch.setattr(main.QFileDialog, "getOpenFileName", lambda *_args: (str(path), ""))
+    win.select_prompt_file("B")
     win.workflow.state.current = State.USER_REVIEW
     win.new_table.fill_rows([["CN", "TH", "ชาย", "NOTE"]])
     win.new_table.select_all_rows(True)
     requests = []
     monkeypatch.setattr(win, "start_worker", lambda _provider, request: requests.append(request))
     win.run_polish()
-    assert requests[0].prompt == prompt["content"]
+    assert requests[0].prompt == content
     assert requests[0].expected_rows == [["CN", "TH", "NOTE"]]
     assert "INPUT TSV:" in requests[0].user_input
-    saved = prompts.list_prompts()
-    assert next(item for item in saved if item["id"] == prompt["id"])["content"] == requests[0].prompt
+    assert requests[0].allow_polish_removals
 
 
 def test_shared_prompt_files_survive_profile_switch_and_read_external_changes(window, tmp_path, monkeypatch):
@@ -245,3 +249,39 @@ def test_missing_shared_prompt_file_does_not_fall_back_to_builtin(window, tmp_pa
     win.settings.search_prompt_path = str(tmp_path / "missing.md")
     with pytest.raises(Exception, match="Prompt"):
         win.prompt_file("A")
+
+
+@pytest.mark.parametrize("approve", [False, True])
+def test_removed_rows_gate_final_copy_and_record_review_in_history(window, monkeypatch, approve):
+    import termflow.core.history as history
+    import termflow.main as main
+    win, app = window
+    win.workflow.state.current = State.USER_REVIEW
+    win.new_table.fill_rows([["CN1", "TH1", "หญิง", "NOTE1"], ["CN2", "TH2", "ชาย", "NOTE2"]])
+    win.new_table.select_all_rows(True)
+    monkeypatch.setattr(win, "start_worker", lambda *_args: None)
+    monkeypatch.setattr(main.PolishRemovalReview, "exec", lambda _self: main.QDialog.Accepted if approve else main.QDialog.Rejected)
+    monkeypatch.setattr(main.QMessageBox, "information", lambda *_args: None)
+    win.run_polish()
+    win.on_response("ตัด CN2 เพราะ duplicate\n=== COPY-READY TSV ===\n```tsv\nCN1\tTH1\tNOTE1\n```")
+    record = history.list_history()[0]
+    assert record["excluded_rows"][0]["cn"] == "CN2"
+    assert record["exclusions_confirmed"] == approve
+    app.clipboard().setText("untouched")
+    win.copy_final()
+    if approve:
+        assert app.clipboard().text() == "CN1\tTH1\tหญิง\tNOTE1"
+        assert win.workflow.state.current == State.FINAL_READY
+    else:
+        assert app.clipboard().text() == "untouched"
+        assert win.workflow.state.current == State.POLISH_FAILED
+
+
+def test_legacy_prompt_manager_and_dropdown_are_not_in_main_ui(window):
+    from PySide6.QtWidgets import QPushButton
+    win, _app = window
+    labels = {button.text() for button in win.findChildren(QPushButton)}
+    assert "Prompt Manager" not in labels
+    assert "Open Prompt หาศัพท์" in labels
+    assert "Open Prompt เกลา" in labels
+    assert not hasattr(win, "prompt_choices")

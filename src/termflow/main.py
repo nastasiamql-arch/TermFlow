@@ -41,7 +41,6 @@ from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.logging_config import configure_logging
 from termflow.core.prompt_loader import import_prompt_text
-from termflow.core.prompts import list_prompts
 from termflow.core.search_batch import ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
 from termflow.core.search_chunks import split_source
 from termflow.core.search_export import format_step_a_result
@@ -61,7 +60,7 @@ from termflow.storage.profiles import (
 )
 from termflow.storage.settings import load_settings, save_settings
 from termflow.ui.copyable_table import CopyableTableWidget
-from termflow.ui.prompt_manager import PromptManagerDialog
+from termflow.ui.polish_review import PolishRemovalReview
 from termflow.ui.search_conflicts import ConflictResolutionDialog
 from termflow.ui.search_progress import MultiSearchWorker, SearchProgressDialog
 from termflow.updater.downloader import download
@@ -476,7 +475,6 @@ class MainWindow(QMainWindow):
             ("Open SOURCE", self.open_source),
             ("Open VOCAB", self.open_vocab),
             ("Settings", self.open_settings),
-            ("Prompt Manager", self.prompt_manager),
             ("History", self.history_dialog),
             ("Check for Updates", self.check_updates),
         ]:
@@ -485,23 +483,16 @@ class MainWindow(QMainWindow):
             head.addWidget(b)
         layout.addLayout(head)
         prompt_row = QHBoxLayout()
-        self.prompt_choices = {}
         self.prompt_file_labels = {}
         for step, label in (("A", "Prompt หาศัพท์"), ("B", "Prompt เกลา")):
-            prompt_row.addWidget(QLabel(label))
-            combo = QComboBox()
-            combo.setMinimumWidth(210)
-            self.prompt_choices[step] = combo
-            combo.currentIndexChanged.connect(lambda _index, step=step: self.choose_prompt(step))
-            combo.hide()
+            button = QPushButton(f"Open {label}")
+            button.clicked.connect(lambda _checked=False, step=step: self.select_prompt_file(step))
+            prompt_row.addWidget(button)
             file_label = QLabel()
             self.prompt_file_labels[step] = file_label
             prompt_row.addWidget(file_label, 1)
-            button = QPushButton("เลือกไฟล์แทนของเดิม")
-            button.clicked.connect(lambda _checked=False, step=step: self.select_prompt_file(step))
-            prompt_row.addWidget(button)
         layout.addLayout(prompt_row)
-        self.refresh_prompt_choices()
+        self.refresh_prompt_files()
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         self.source_view = QPlainTextEdit()
@@ -643,7 +634,7 @@ class MainWindow(QMainWindow):
         self.vocab_path = self.profile.vocab_path
         self.workflow = Workflow()
         self.initialize_profile_files()
-        self.refresh_prompt_choices()
+        self.refresh_prompt_files()
         self.statusBar().showMessage(f"เปิดโปรไฟล์: {self.profile.name}")
 
     def initialize_profile_files(self):
@@ -749,8 +740,6 @@ class MainWindow(QMainWindow):
             button.setEnabled(True)
         self._set_results_stale(self.results_stale)
         self._request_timer.stop()
-        for combo in self.prompt_choices.values():
-            combo.setEnabled(True)
         QTimer.singleShot(0, self._finish_pending_file_refreshes)
         if self._pending_retry:
             self._pending_retry = False
@@ -856,13 +845,12 @@ class MainWindow(QMainWindow):
     def prompt_file(self, step):
         category = "Search" if step == "A" else "Polish"
         filename = self.settings.search_prompt_path if step == "A" else self.settings.polish_prompt_path
-        if filename:
-            text = import_prompt_text(Path(filename))
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            return {"id": f"shared-file-{step}", "name": Path(filename).name,
-                    "category": category, "content": text, "version": digest[:12], "is_builtin": False}
-        prompt_id = self.settings.selected_search_prompt if step == "A" else self.settings.selected_polish_prompt
-        return next((x for x in list_prompts() if x["id"] == prompt_id and x["category"] == category), None)
+        if not filename:
+            raise ValueError("เลือกไฟล์ Prompt จากปุ่ม Open Prompt หาศัพท์ / Open Prompt เกลา ก่อนใช้งาน")
+        text = import_prompt_text(Path(filename))
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return {"id": f"shared-file-{step}", "name": Path(filename).name,
+                "category": category, "content": text, "version": digest[:12], "is_builtin": False}
 
     def show_request_progress(self):
         if self._thread and self._thread.isRunning():
@@ -886,7 +874,7 @@ class MainWindow(QMainWindow):
         try:
             selected_prompt = self.prompt_file(step)
             if not selected_prompt:
-                raise ValueError("Selected prompt is unavailable; open Prompt Manager and select a prompt.")
+                raise ValueError("เลือกไฟล์ Prompt จากปุ่ม Open Prompt ก่อนใช้งาน")
             prompt = selected_prompt["content"]
             if not prompt.strip():
                 raise ValueError("Selected prompt is empty.")
@@ -898,7 +886,9 @@ class MainWindow(QMainWindow):
         if step == "B":
             wrapper += (
                 "\nUse the Prompt copy-ready TSV section, or a distinct section headed === COPY-READY TSV ===, with the polished rows "
-                "as CN<TAB>TH<TAB>NOTE. Preserve one row for every input row."
+                "as CN<TAB>TH<TAB>NOTE. Process every input row according to the exact Prompt. "
+                "If the Prompt requires excluding rows, explain every excluded CN and reason in the analysis or summary. "
+                "Do not omit any row silently. Return an empty TSV code block when the Prompt excludes all rows."
             )
         request = GenerateRequest(
             prompt=prompt,
@@ -906,6 +896,7 @@ class MainWindow(QMainWindow):
             vocab=self.vocab_view.toPlainText(),
             user_input=wrapper + ("\n\nINPUT TSV:\n" + user_input if user_input else ""),
             validation_step=step,
+            allow_polish_removals=step == "B",
             expected_rows=[line.split("\t") for line in user_input.splitlines()] if step == "B" else [],
             reuse_result=self.settings.reuse_results,
         )
@@ -923,6 +914,7 @@ class MainWindow(QMainWindow):
                                               base_url=self.settings.base_url, timeout=self.settings.timeout, retries=self.settings.retries)
         if step == "B":
             self.workflow.begin_polish()
+            self.final_table.setRowCount(0)
         self._step = step
         self._prompt = prompt
         self._selected_prompt = selected_prompt
@@ -936,8 +928,6 @@ class MainWindow(QMainWindow):
         self.cancel_button.setVisible(True)
         for button in self.search_action_buttons.values():
             button.setEnabled(False)
-        for combo in self.prompt_choices.values():
-            combo.setEnabled(False)
         self._request_started = monotonic()
         self._request_timer.start()
         self._thread = QThread(self)
@@ -999,7 +989,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Prompt", f"อ่านไฟล์ Prompt ไม่ได้: {exc}")
             return
         if not selected_prompt or not selected_prompt.get("content", "").strip():
-            QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
+            QMessageBox.warning(self, "Prompt", "กรุณาเลือกไฟล์ Prompt จากปุ่ม Open Prompt หาศัพท์")
             return
         chunk_count = self.settings.search_chunks
         try:
@@ -1028,8 +1018,6 @@ class MainWindow(QMainWindow):
         self._start_search_worker()
 
     def _start_search_worker(self):
-        for combo in self.prompt_choices.values():
-            combo.setEnabled(False)
         self.search_progress.set_active(True)
         self.cancel_button.setVisible(True)
         for button in self.search_action_buttons.values():
@@ -1243,7 +1231,15 @@ class MainWindow(QMainWindow):
                 valid = True
                 self.statusBar().showMessage("Search Complete")
             else:
-                final = self.workflow.accept_polish(raw, self._b_input())
+                final = self.workflow.accept_polish(raw, self._b_input(), allow_removals=self._request.allow_polish_removals)
+                if self.workflow.excluded_rows:
+                    review = PolishRemovalReview(self.workflow.excluded_rows, raw, len(final), self)
+                    if review.exec() != QDialog.Accepted:
+                        self.workflow.reject_polish_exclusions()
+                        self.save_current_snapshot(raw, {"validation_error": "ยังไม่ได้ยืนยันรายการที่ถูกตัด"}, False)
+                        self.statusBar().showMessage("ยังไม่ยืนยันแถวที่ตัด · กดเกลาใหม่ได้")
+                        return
+                    self.workflow.confirm_polish_exclusions()
                 self.fill_final_table(final)
                 parsed = final
                 valid = True
@@ -1286,6 +1282,9 @@ class MainWindow(QMainWindow):
                 "usage": getattr(self._provider, "last_usage", {}),
                 "finish_reason": getattr(self._provider, "finish_reason", ""),
                 "result_reused": getattr(self._provider, "cache_hit", False),
+                "excluded_rows": self.workflow.excluded_rows if self._step == "B" else [],
+                "exclusions_confirmed": self.workflow.exclusions_confirmed if self._step == "B" else False,
+                "selected_input_rows": self._request.expected_rows,
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "raw_response": raw,
                 "parsed_result": parsed,
@@ -1378,6 +1377,9 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText("\n".join(lines))
 
     def copy_final(self, selected=False):
+        if self.workflow.state.current != State.FINAL_READY or self.results_stale:
+            QMessageBox.information(self, "Final Result", "ต้องเกลาและยืนยันรายการที่ถูกตัดให้เรียบร้อยก่อน Copy")
+            return
         indexes = {index.row() for index in self.final_table.selectionModel().selectedRows()} if selected else set()
         rows = [
             [self.final_table.item(row, col).text() for col in range(4)]
@@ -1388,6 +1390,9 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(value)
 
     def copy_step_a_format(self):
+        if self.workflow.state.current != State.FINAL_READY or self.results_stale:
+            QMessageBox.information(self, "Final Result", "ต้องเกลาและยืนยันรายการที่ถูกตัดให้เรียบร้อยก่อน Copy")
+            return
         rows = ["\t".join(self.final_table.item(row, col).text() for col in range(4)) for row in range(self.final_table.rowCount())]
         value = "=== คำศัพท์ใหม่ ===\n" + ("\n".join(rows) if rows else "— ไม่มีรายการ —")
         value += "\n\n=== คำศัพท์อัปเดต ===\n— ไม่มีรายการ —"
@@ -1419,20 +1424,11 @@ class MainWindow(QMainWindow):
             self._save_profile_state()
             self.apply_theme()
 
-    def refresh_prompt_choices(self):
-        for step, combo in self.prompt_choices.items():
-            category = "Search" if step == "A" else "Polish"
-            prompt_id = self.settings.selected_search_prompt if step == "A" else self.settings.selected_polish_prompt
-            combo.blockSignals(True)
-            combo.clear()
-            for prompt in list_prompts():
-                if prompt["category"] == category:
-                    combo.addItem(f"{prompt['name']} · v{prompt['version']}", prompt["id"])
-            combo.setCurrentIndex(combo.findData(prompt_id))
-            combo.blockSignals(False)
+    def refresh_prompt_files(self):
+        for step, label in self.prompt_file_labels.items():
             filename = self.settings.search_prompt_path if step == "A" else self.settings.polish_prompt_path
-            self.prompt_file_labels[step].setText(Path(filename).name if filename else combo.currentText())
-            self.prompt_file_labels[step].setToolTip(filename or "ใช้ Prompt ในโปรแกรม · ทุกโปรไฟล์ใช้ร่วมกัน")
+            label.setText(Path(filename).name if filename else "ยังไม่ได้เลือกไฟล์")
+            label.setToolTip(f"ใช้ร่วมกันทุกโปรไฟล์\n{filename}" if filename else "เลือกไฟล์ .md / .txt / .docx")
 
     def select_prompt_file(self, step):
         if self._busy_with_ai():
@@ -1453,40 +1449,13 @@ class MainWindow(QMainWindow):
         else:
             self.settings.polish_prompt_path = str(Path(filename).resolve())
         save_settings(self.settings)
-        self.refresh_prompt_choices()
+        self.refresh_prompt_files()
         self.statusBar().showMessage("เปลี่ยนไฟล์ Prompt แล้ว · ทุกโปรไฟล์ใช้ร่วมกัน · อ่านไฟล์ล่าสุดก่อนรันทุกครั้ง")
 
-    def choose_prompt(self, step):
-        prompt_id = self.prompt_choices[step].currentData()
-        if not prompt_id:
-            return
-        if step == "A":
-            self.settings.selected_search_prompt = prompt_id
-            self.settings.search_prompt_path = ""
-            self._mark_results_stale()
-        else:
-            self.settings.selected_polish_prompt = prompt_id
-            self.settings.polish_prompt_path = ""
-        save_settings(self.settings)
-        self._save_profile_state()
-
-    def prompt_manager(self, step=None):
-        category = "Search" if step == "A" else "Polish" if step == "B" else None
-        dialog = PromptManagerDialog(self, category)
-        if dialog.exec() and dialog.selected_prompt:
-            prompt = dialog.selected_prompt
-            if prompt["category"] == "Search":
-                self.settings.selected_search_prompt = prompt["id"]
-                self.settings.search_prompt_path = ""
-                self._mark_results_stale()
-            else:
-                self.settings.selected_polish_prompt = prompt["id"]
-                self.settings.polish_prompt_path = ""
-            save_settings(self.settings)
-            self._save_profile_state()
-        self.refresh_prompt_choices()
-
     def history_dialog(self):
+        if self._busy_with_ai():
+            QMessageBox.information(self, "History", "รอคำขอ AI จบก่อนเปิดผลเก่า")
+            return
         entries = list_history()
         if not entries:
             QMessageBox.information(self, "History", "No history yet")
@@ -1497,6 +1466,20 @@ class MainWindow(QMainWindow):
             if entry:
                 parsed = entry.get("parsed_result", {})
                 if isinstance(parsed, list):
+                    if not entry.get("validation_result", {}).get("passed"):
+                        QMessageBox.warning(self, "History", "ผลนี้ยังไม่ผ่านการตรวจ ไม่สามารถเปิดเป็น Final Result")
+                        return
+                    if entry.get("excluded_rows") and not entry.get("exclusions_confirmed"):
+                        QMessageBox.warning(self, "History", "รายการที่ถูกตัดยังไม่ได้รับการยืนยัน")
+                        return
+                    restored = Workflow()
+                    try:
+                        restored.restore_final_snapshot(parsed)
+                    except Exception as exc:
+                        QMessageBox.warning(self, "History", str(exc))
+                        return
+                    self.workflow = restored
+                    self._set_results_stale(False)
                     self.fill_final_table(parsed)
                 elif isinstance(parsed, dict):
                     self.fill_table(self.new_table, parsed.get("new", []))
@@ -1605,7 +1588,6 @@ class MainWindow(QMainWindow):
 def main():
     if "--check-prompts" in sys.argv:
         from termflow.core.prompts import list_prompts
-
         prompts = list_prompts()
         sys.exit(0 if {item["id"] for item in prompts} >= {"builtin-search", "builtin-polish"} else 1)
     if "--remove-user-data" in sys.argv:

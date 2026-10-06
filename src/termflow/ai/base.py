@@ -12,6 +12,7 @@ class GenerateRequest(BaseModel):
     validation_step: str = ""
     expected_rows: list[list[str]] = []
     reuse_result: bool = True
+    allow_polish_removals: bool = False
 
 
 class AIProvider(ABC):

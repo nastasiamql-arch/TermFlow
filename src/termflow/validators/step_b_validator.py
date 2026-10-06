@@ -6,7 +6,7 @@ from termflow.validators.common import parse_tsv
 COPY_READY = "=== COPY-READY TSV ==="
 
 
-def validate_step_b(raw: str, input_rows: list[list[str]]) -> list[list[str]]:
+def validate_step_b(raw: str, input_rows: list[list[str]], *, allow_removals: bool = False) -> list[list[str]]:
     # Analysis is allowed, but the copy-ready region must be clearly delimited.
     heading = r"(?m)^[ \t]*(?:#{1,6}[ \t]+)?(?:=== COPY-READY TSV ===|(?:ส่วนที่[ \t]*3:[ \t]*)?ผลลัพธ์ TSV[^\n]*)[ \t]*\r?$"
     markers = list(re.finditer(heading, raw))
@@ -14,7 +14,8 @@ def validate_step_b(raw: str, input_rows: list[list[str]]) -> list[list[str]]:
         raise ValidationError(["Expected exactly one copy-ready TSV section"])
     block = raw[markers[0].end():].strip() if markers else raw.strip()
     if block.startswith("```"):
-        match = re.match(r"```(?:text|tsv)?[ \t]*\r?\n(.*?)\r?\n```(?=\s|$)", block, flags=re.IGNORECASE | re.DOTALL)
+        match = re.match(r"```(?:text|tsv)?[ \t]*\r?\n(.*?)^```[ \t]*\r?$", block,
+                         flags=re.IGNORECASE | re.DOTALL | re.MULTILINE)
         if not match:
             raise ValidationError(["Markdown contamination in copy-ready block"])
         trailing = block[match.end():]
@@ -31,11 +32,11 @@ def validate_step_b(raw: str, input_rows: list[list[str]]) -> list[list[str]]:
         raise ValidationError([str(exc)]) from exc
     expected = [row[0] for row in input_rows]
     found = [row[0] for row in out]
-    if len(out) != len(input_rows):
+    if len(out) > len(input_rows) or (not allow_removals and len(out) != len(input_rows)):
         raise ValidationError([f"Expected {len(input_rows)} output rows; Received {len(out)}"])
     if len(set(found)) != len(found):
         raise ValidationError(["Duplicate CN"])
-    if set(found) != set(expected):
+    if (allow_removals and not set(found).issubset(expected)) or (not allow_removals and set(found) != set(expected)):
         raise ValidationError(["Missing or unknown CN"])
     for cn, th, note in out:
         if cn not in expected:
