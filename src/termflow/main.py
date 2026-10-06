@@ -61,12 +61,15 @@ from termflow.storage.profiles import (
 from termflow.storage.settings import load_settings, save_settings
 from termflow.ui.copyable_table import CopyableTableWidget
 from termflow.ui.polish_review import PolishRemovalReview
+from termflow.ui.response_editor import ResponseEditor
 from termflow.ui.search_conflicts import ConflictResolutionDialog
 from termflow.ui.search_progress import MultiSearchWorker, SearchProgressDialog
 from termflow.updater.downloader import download
 from termflow.updater.github_releases import latest_release
 from termflow.updater.installer import launch_installer
 from termflow.updater.version_check import is_newer
+from termflow.validators.step_a_validator import validate_step_a
+from termflow.validators.step_b_validator import validate_step_b
 from termflow.version import __version__
 
 
@@ -1014,6 +1017,7 @@ class MainWindow(QMainWindow):
             self.search_progress = SearchProgressDialog(self, chunk_count=chunk_count)
             self.search_progress.cancel_requested.connect(self.cancel_search_batch)
             self.search_progress.retry_requested.connect(self.retry_failed_chunks)
+            self.search_progress.response_edited.connect(self.accept_local_search_edit)
         self.search_progress.show()
         self._start_search_worker()
 
@@ -1063,6 +1067,17 @@ class MainWindow(QMainWindow):
             pass
         self._start_search_worker()
 
+    def accept_local_search_edit(self, index, raw):
+        if self._busy_with_ai() or self.workflow.state.current != State.SEARCH_FAILED:
+            return
+        run = self._search_batch.runs[index - 1]
+        if run.status != ChunkStatus.FAILED:
+            return
+        validate_step_a(raw, flexible=True)
+        self._search_batch.revise_response(index, raw)
+        self.workflow.state.transition(State.SEARCH_RUNNING)
+        self.on_search_batch_finished(self._search_batch)
+
     def on_search_batch_error(self, message):
         self.cancel_button.setVisible(False)
         for button in self.search_action_buttons.values():
@@ -1087,6 +1102,7 @@ class MainWindow(QMainWindow):
             except ValueError:
                 pass
             self.statusBar().showMessage("บางช่วงค้นหาไม่สำเร็จ · กดลองช่วงที่ผิดพลาดอีกครั้ง")
+            self._save_search_batch_history([], [], passed=False)
             return
         if batch.cancellation_requested or any(run.status == ChunkStatus.CANCELLED for run in batch.runs):
             try:
@@ -1121,7 +1137,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Validation Failed")
             QMessageBox.warning(self, "รวมผลค้นหาไม่สำเร็จ", str(exc))
 
-    def _save_search_batch_history(self, new_rows, update_rows):
+    def _save_search_batch_history(self, new_rows, update_rows, *, passed=True):
         batch = self._search_batch
         input_text = self.workflow.source + self.workflow.vocab
         secret = self._search_api_key or ""
@@ -1150,7 +1166,10 @@ class MainWindow(QMainWindow):
                 "model": self._search_config.model,
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "parsed_result": {"new": new_rows, "update": update_rows},
-                "validation_result": {"passed": True, "details": "All non-empty source chunks passed strict STEP A validation."},
+                "validation_result": {
+                    "passed": passed,
+                    "details": "All chunks passed." if passed else "Incomplete search · inspect chunk responses before retrying.",
+                },
                 "chunks": [
                     {
                         "index": run.chunk.index,
@@ -1344,6 +1363,7 @@ class MainWindow(QMainWindow):
         retry = box.addButton("Retry Same Request", QMessageBox.AcceptRole)
         view = box.addButton("View Raw Response", QMessageBox.ActionRole)
         copy = box.addButton("Copy Raw Response", QMessageBox.ActionRole)
+        edit = box.addButton("แก้ผลเดิม · ไม่เรียก API", QMessageBox.ActionRole)
         box.addButton("Close", QMessageBox.RejectRole)
         box.exec()
         if box.clickedButton() == retry:
@@ -1359,6 +1379,20 @@ class MainWindow(QMainWindow):
             dialog.exec()
         elif box.clickedButton() == copy:
             QApplication.clipboard().setText(raw)
+        elif box.clickedButton() == edit:
+            def validator(value):
+                if self._step == "A":
+                    return validate_step_a(value, flexible=True)
+                return validate_step_b(value, [row.b_input.split("\t") for row in self.workflow.adapted],
+                                       allow_removals=self._request.allow_polish_removals, flexible=True)
+            dialog = ResponseEditor(raw, validator, self)
+            if dialog.exec() == QDialog.Accepted:
+                if self._step == "A":
+                    self.workflow.begin_search()
+                else:
+                    self.workflow.begin_polish()
+                self.save_current_snapshot(raw, {"original_before_user_edit": True}, False)
+                self.on_response(dialog.editor.toPlainText())
 
     def fill_table(self, table, rows):
         table.fill_rows(rows)

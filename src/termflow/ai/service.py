@@ -85,9 +85,9 @@ class HTTPProvider(AIProvider):
     @staticmethod
     def _validate(raw, request):
         if request.validation_step == "A":
-            validate_step_a(raw)
+            validate_step_a(raw, flexible=True)
         elif request.validation_step == "B":
-            validate_step_b(raw, request.expected_rows, allow_removals=request.allow_polish_removals)
+            validate_step_b(raw, request.expected_rows, allow_removals=request.allow_polish_removals, flexible=True)
 
     def _wait_before_retry(self, attempt: int) -> None:
         delay = min(2**attempt, 30)

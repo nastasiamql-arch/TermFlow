@@ -28,7 +28,7 @@ class Workflow:
     def accept_search(self, raw: str) -> tuple[list[list[str]], list[list[str]]]:
         self.state.transition(self.state.current.__class__.SEARCH_VALIDATING)
         try:
-            new, update = validate_step_a(raw)
+            new, update = validate_step_a(raw, flexible=True)
         except Exception:
             self.state.transition(self.state.current.__class__.SEARCH_FAILED)
             raise
@@ -67,7 +67,7 @@ class Workflow:
         self.pending_final = []
         self.exclusions_confirmed = False
         try:
-            rows = validate_step_b(raw, [line.split("\t") for line in b_input.splitlines()], allow_removals=allow_removals)
+            rows = validate_step_b(raw, [line.split("\t") for line in b_input.splitlines()], allow_removals=allow_removals, flexible=True)
             kept = {row[0] for row in rows}
             included = [row for row in self.adapted if row.cn in kept]
             self.excluded_rows = []

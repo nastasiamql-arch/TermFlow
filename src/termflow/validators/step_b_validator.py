@@ -6,7 +6,7 @@ from termflow.validators.common import parse_tsv
 COPY_READY = "=== COPY-READY TSV ==="
 
 
-def validate_step_b(raw: str, input_rows: list[list[str]], *, allow_removals: bool = False) -> list[list[str]]:
+def validate_step_b(raw: str, input_rows: list[list[str]], *, allow_removals: bool = False, flexible: bool = False) -> list[list[str]]:
     # Analysis is allowed, but the copy-ready region must be clearly delimited.
     heading = r"(?m)^[ \t]*(?:#{1,6}[ \t]+)?(?:=== COPY-READY TSV ===|(?:ส่วนที่[ \t]*3:[ \t]*)?ผลลัพธ์ TSV[^\n]*)[ \t]*\r?$"
     markers = list(re.finditer(heading, raw))
@@ -14,7 +14,8 @@ def validate_step_b(raw: str, input_rows: list[list[str]], *, allow_removals: bo
         raise ValidationError(["Expected exactly one copy-ready TSV section"])
     block = raw[markers[0].end():].strip() if markers else raw.strip()
     if block.startswith("```"):
-        match = re.match(r"```(?:text|tsv)?[ \t]*\r?\n(.*?)^```[ \t]*\r?$", block,
+        languages = r"(?:text|tsv|csv|markdown|md|json)?" if flexible else r"(?:text|tsv)?"
+        match = re.match(r"```" + languages + r"[ \t]*\r?\n(.*?)^```[ \t]*\r?$", block,
                          flags=re.IGNORECASE | re.DOTALL | re.MULTILINE)
         if not match:
             raise ValidationError(["Markdown contamination in copy-ready block"])
@@ -24,7 +25,10 @@ def validate_step_b(raw: str, input_rows: list[list[str]], *, allow_removals: bo
         block = match.group(1).strip()
     elif "```" in block:
         raise ValidationError(["Markdown contamination in copy-ready block"])
-    if "|" in block:
+    if flexible:
+        from termflow.validators.formats import normalize_rows
+        block = normalize_rows(block, 3)
+    elif "|" in block:
         raise ValidationError(["Markdown contamination in copy-ready block"])
     try:
         out = parse_tsv(block, 3)

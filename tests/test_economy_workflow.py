@@ -203,6 +203,35 @@ def test_search_can_restart_after_final_without_direct_state_assignment():
     assert workflow.state.current == State.SEARCH_RUNNING
 
 
+def test_failed_search_can_be_repaired_locally_without_provider(window, monkeypatch):
+    import termflow.main as main
+    from termflow.ai.service import ProviderConfig
+    from termflow.core.search_batch import SearchBatch
+    from termflow.core.search_chunks import split_source
+
+    win, _app = window
+    win.workflow.begin_search()
+    win.workflow.state.transition(State.SEARCH_FAILED)
+    batch = SearchBatch(split_source("เนื้อหานิยาย", 1))
+    invalid = "=== คำศัพท์ใหม่ ===\nCN\tTH\tหญิง\t\n=== คำศัพท์อัปเดต ===\n— ไม่มีรายการ —"
+    assert not batch.accept_response(1, invalid)
+    win._search_batch = batch
+    win._search_selected_prompt = win.prompt_file("A")
+    win._search_prompt = win._search_selected_prompt["content"]
+    win._search_config = ProviderConfig(provider="compatible", model="test")
+    win._search_api_key = "secret"
+    win.search_progress = main.SearchProgressDialog(win, 1)
+    def forbidden(*_args):
+        raise AssertionError("Local correction must never invoke API")
+    monkeypatch.setattr(main, "create_provider", forbidden)
+    win.accept_local_search_edit(1, invalid.replace("หญิง\t\n", "หญิง\tNOTE\n"))
+    assert win.workflow.state.current == State.USER_REVIEW
+    assert win.workflow.new_rows == [["CN", "TH", "หญิง", "NOTE"]]
+    assert batch.runs[0].attempts[0]["raw_response"] == invalid
+    assert batch.runs[0].attempts[-1]["origin"] == "user_edit_no_api"
+    assert batch.runs[0].retry_count == 0
+
+
 def test_prompt_selection_is_used_in_actual_polish_request(window, tmp_path, monkeypatch):
     import termflow.main as main
     win, _app = window

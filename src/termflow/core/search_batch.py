@@ -110,7 +110,7 @@ class SearchBatch:
         run.status = ChunkStatus.VALIDATING
         run.raw_response = raw
         try:
-            new_rows, update_rows = validate_step_a(raw)
+            new_rows, update_rows = validate_step_a(raw, flexible=True)
         except Exception as exc:
             run.status = ChunkStatus.FAILED
             run.error = str(exc)
@@ -122,6 +122,16 @@ class SearchBatch:
         run.status = ChunkStatus.COMPLETE
         run.attempts.append({"raw_response": raw, "valid": True, "new_rows": new_rows, "update_rows": update_rows})
         return True
+
+    def revise_response(self, index: int, raw: str) -> None:
+        """Revalidate a user correction without counting or scheduling an API retry."""
+        run = self._run(index)
+        if run.status != ChunkStatus.FAILED:
+            raise ValueError("Only failed responses can be corrected locally")
+        validate_step_a(raw, flexible=True)
+        run.status = ChunkStatus.PENDING
+        self.accept_response(index, raw)
+        run.attempts[-1]["origin"] = "user_edit_no_api"
 
     def accept_split_responses(self, index: int, responses: list[str]) -> bool:
         """Validate every split response before combining rows into its parent chunk."""
