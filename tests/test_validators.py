@@ -79,9 +79,28 @@ def test_step_b_extracts_tsv_from_prompt_required_code_block():
     assert validate_step_b(raw, source) == source
 
 
-def test_step_b_still_rejects_prose_or_extra_markdown_after_tsv_fence():
+def test_step_b_keeps_summary_after_fence_outside_copy_ready_result():
     source = [["林雪", "หลินเสวี่ย", "ศิษย์สำนัก"]]
     raw = f"{COPY_READY}\n```tsv\n林雪\tหลินเสวี่ย\tศิษย์สำนัก\n```\nextra prose"
 
-    with pytest.raises(ValidationError, match="Markdown contamination"):
-        validate_step_b(raw, source)
+    assert validate_step_b(raw, source) == source
+
+
+def test_step_b_accepts_original_prompt_heading_and_ignores_analysis_table():
+    rows = [["林雪", "หลินเสวี่ย", "ศิษย์สำนัก"]]
+    raw = "### วิเคราะห์\n| CN | TH |\n### สรุป\nสรุป\n### ผลลัพธ์ TSV\n```tsv\n林雪\tหลินเสวี่ย\tศิษย์สำนัก\n```"
+    assert validate_step_b(raw, rows) == rows
+
+
+def test_step_b_rejects_ambiguous_result_sections():
+    raw = "### ผลลัพธ์ TSV\n```tsv\nCN\tTH\tNOTE\n```\n" + COPY_READY + "\nCN\tTH\tNOTE"
+    with pytest.raises(ValidationError):
+        validate_step_b(raw, [["CN", "TH", "NOTE"]])
+
+
+def test_step_b_accepts_plain_tsv_and_rejects_second_unmarked_block():
+    rows = [["CN", "TH", "NOTE"]]
+    assert validate_step_b("CN\tTH\tNOTE", rows) == rows
+    raw = COPY_READY + "\n```tsv\nCN\tTH\tNOTE\n```\n```tsv\nOTHER\tTH\tNOTE\n```"
+    with pytest.raises(ValidationError):
+        validate_step_b(raw, rows)

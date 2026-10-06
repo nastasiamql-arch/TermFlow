@@ -40,6 +40,13 @@ class Workflow:
         return b_input
 
     def begin_search(self) -> None:
+        states = self.state.current.__class__
+        if self.state.current == states.FINAL_READY:
+            self.state.transition(states.USER_REVIEW)
+        elif self.state.current == states.POLISH_FAILED:
+            self.state.transition(states.POLISH_READY)
+        if self.state.current == states.POLISH_READY:
+            self.state.transition(states.USER_REVIEW)
         if self.state.current in {self.state.current.__class__.IDLE, self.state.current.__class__.SOURCE_LOADED}:
             self.state.transition(self.state.current.__class__.READY_FOR_SEARCH)
         self.state.transition(self.state.current.__class__.SEARCH_RUNNING)

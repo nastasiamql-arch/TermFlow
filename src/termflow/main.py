@@ -5,6 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 from threading import Event
+from time import monotonic
 
 import httpx
 from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, QUrl, Signal
@@ -81,7 +82,7 @@ class Worker(QObject):
         try:
             self.done.emit(self.provider.generate(self.request))
         except Exception as e:
-            self.failed.emit(str(e))
+            self.failed.emit(str(e).replace(self.provider.api_key, "[REDACTED]") if self.provider.api_key else str(e))
 
 
 class UpdateWorker(QObject):
@@ -223,12 +224,18 @@ class SettingsDialog(QDialog):
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.addItem(settings.model)
+        self.search_model = QLineEdit(settings.search_model)
+        self.polish_model = QLineEdit(settings.polish_model)
+        self.search_model.setPlaceholderText("ว่าง = ใช้ Default Model")
+        self.polish_model.setPlaceholderText("ว่าง = ใช้ Default Model")
+        self.reuse_results = QCheckBox("ใช้ผลเดิมที่ตรวจผ่านแล้วเมื่อข้อมูลและ Prompt เหมือนเดิม")
+        self.reuse_results.setChecked(settings.reuse_results)
         self.timeout = QLineEdit(str(settings.timeout))
         self.retries = QLineEdit(str(settings.retries))
         self.search_chunks = QComboBox()
         for count in range(1, 21):
             if count == 1:
-                label = "1 ช่วง · เหมาะกับไม่เกิน 10,000 ตัวอักษร"
+                label = "1 ช่วง · แนะนำสำหรับ SOURCE ไม่เกิน 16,000 ตัวอักษร"
             else:
                 lower = count * 5_000
                 upper = count * 10_000
@@ -265,6 +272,9 @@ class SettingsDialog(QDialog):
         form.addRow("API Key", self.key)
         form.addRow("Base URL", self.base)
         form.addRow("Default Model", self.model)
+        form.addRow("Model หาศัพท์", self.search_model)
+        form.addRow("Model เกลา", self.polish_model)
+        form.addRow("ประหยัด API", self.reuse_results)
         form.addRow("Timeout (seconds)", self.timeout)
         form.addRow("Retries", self.retries)
         form.addRow("แบ่ง SOURCE", self.search_chunks)
@@ -281,11 +291,19 @@ class SettingsDialog(QDialog):
         form.addRow(row)
 
     def save(self):
+        try:
+            ProviderConfig(timeout=int(self.timeout.text()), retries=int(self.retries.text()))
+        except ValueError:
+            QMessageBox.warning(self, "Settings", "Timeout ต้องเป็น 5–600 วินาที และ Retries ต้องเป็น 0–10")
+            return
         s = self.settings
         s.provider = self.provider.currentText()
         s.credential_name = s.provider
         s.base_url = self.base.text().strip()
         s.model = self.model.currentText().strip()
+        s.search_model = self.search_model.text().strip()
+        s.polish_model = self.polish_model.text().strip()
+        s.reuse_results = self.reuse_results.isChecked()
         s.timeout = int(self.timeout.text())
         s.retries = int(self.retries.text())
         s.search_chunks = int(self.search_chunks.currentData())
@@ -431,6 +449,10 @@ class MainWindow(QMainWindow):
         self.workflow = Workflow()
         self.source_path = self.profile.source_path
         self.vocab_path = self.profile.vocab_path
+        self._request_timer = QTimer(self)
+        self._request_timer.setInterval(1000)
+        self._request_timer.timeout.connect(self.show_request_progress)
+        self._pending_retry = False
         self._thread = None
         self._search_thread = None
         self._search_worker = None
@@ -465,6 +487,20 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             head.addWidget(b)
         layout.addLayout(head)
+        prompt_row = QHBoxLayout()
+        self.prompt_choices = {}
+        for step, label in (("A", "Prompt หาศัพท์"), ("B", "Prompt เกลา")):
+            prompt_row.addWidget(QLabel(label))
+            combo = QComboBox()
+            combo.setMinimumWidth(210)
+            self.prompt_choices[step] = combo
+            combo.currentIndexChanged.connect(lambda _index, step=step: self.choose_prompt(step))
+            prompt_row.addWidget(combo, 1)
+            button = QPushButton("นำเข้า / แก้ไข")
+            button.clicked.connect(lambda _checked=False, step=step: self.prompt_manager(step))
+            prompt_row.addWidget(button)
+        layout.addLayout(prompt_row)
+        self.refresh_prompt_choices()
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         self.source_view = QPlainTextEdit()
@@ -608,6 +644,7 @@ class MainWindow(QMainWindow):
         self.vocab_path = self.profile.vocab_path
         self.workflow = Workflow()
         self.initialize_profile_files()
+        self.refresh_prompt_choices()
         self.statusBar().showMessage(f"เปิดโปรไฟล์: {self.profile.name}")
 
     def initialize_profile_files(self):
@@ -709,7 +746,16 @@ class MainWindow(QMainWindow):
             self._apply_file_snapshot(kind, snapshot)
 
     def _after_ai_thread_finished(self):
+        for button in self.search_action_buttons.values():
+            button.setEnabled(True)
+        self._set_results_stale(self.results_stale)
+        self._request_timer.stop()
+        for combo in self.prompt_choices.values():
+            combo.setEnabled(True)
         QTimer.singleShot(0, self._finish_pending_file_refreshes)
+        if self._pending_retry:
+            self._pending_retry = False
+            QTimer.singleShot(0, self.retry_same_request)
 
     def _set_results_stale(self, stale):
         self.results_stale = stale
@@ -813,10 +859,21 @@ class MainWindow(QMainWindow):
         prompt_id = self.settings.selected_search_prompt if step == "A" else self.settings.selected_polish_prompt
         return next((x for x in list_prompts() if x["id"] == prompt_id and x["category"] == category), None)
 
+    def show_request_progress(self):
+        if self._thread and self._thread.isRunning():
+            elapsed = int(monotonic() - self._request_started)
+            self.statusBar().showMessage(f"กำลังเกลา · รอคำตอบ {elapsed} วินาที · กด Cancel เพื่อยกเลิก")
+
     def request(self, step, user_input=""):
-        if not self.settings.model:
+        if self._busy_with_ai():
+            return False
+        if not ((self.settings.search_model if step == "A" else self.settings.polish_model) or self.settings.model):
             self.open_settings()
             self.settings = load_settings()
+        model = (self.settings.search_model if step == "A" else self.settings.polish_model) or self.settings.model
+        if not model:
+            QMessageBox.warning(self, "Model", "เลือก Model ก่อนใช้งาน")
+            return False
         secret = get(self.settings.provider)
         if not secret:
             QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
@@ -832,28 +889,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Prompt", str(e))
             return
         # Exact prompt text is passed unchanged as system prompt. The execution wrapper is separate user content.
-        wrapper = "Return the requested result only. Do not write or modify files."
+        wrapper = "Follow the exact system Prompt including its analysis and summary requirements. Do not write or modify files."
         if step == "B":
             wrapper += (
-                "\nInclude a distinct section headed exactly: === COPY-READY TSV ===, followed only by the polished rows "
+                "\nUse the Prompt copy-ready TSV section, or a distinct section headed === COPY-READY TSV ===, with the polished rows "
                 "as CN<TAB>TH<TAB>NOTE. Preserve one row for every input row."
             )
         request = GenerateRequest(
             prompt=prompt,
             source=self.source_view.toPlainText() if step == "A" else "",
             vocab=self.vocab_view.toPlainText(),
-            user_input=wrapper + ("\n\n" + user_input if user_input else ""),
+            user_input=wrapper + ("\n\nINPUT TSV:\n" + user_input if user_input else ""),
+            validation_step=step,
+            expected_rows=[line.split("\t") for line in user_input.splitlines()] if step == "B" else [],
+            reuse_result=self.settings.reuse_results,
         )
         provider = create_provider(
             ProviderConfig(
                 provider=self.settings.provider,
-                model=self.settings.model,
+                model=model,
                 base_url=self.settings.base_url,
                 timeout=self.settings.timeout,
                 retries=self.settings.retries,
             ),
             secret,
         )
+        self._request_config = ProviderConfig(provider=self.settings.provider, model=model,
+                                              base_url=self.settings.base_url, timeout=self.settings.timeout, retries=self.settings.retries)
+        if step == "B":
+            self.workflow.begin_polish()
         self._step = step
         self._prompt = prompt
         self._selected_prompt = selected_prompt
@@ -861,10 +925,17 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Searching..." if step == "A" else "Polishing...")
         self._provider = provider
         self.start_worker(provider, request)
+        return True
 
     def start_worker(self, provider, request):
         self.cancel_button.setVisible(True)
-        self._thread = QThread()
+        for button in self.search_action_buttons.values():
+            button.setEnabled(False)
+        for combo in self.prompt_choices.values():
+            combo.setEnabled(False)
+        self._request_started = monotonic()
+        self._request_timer.start()
+        self._thread = QThread(self)
         self._worker = Worker(provider, request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -872,7 +943,8 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self.on_error)
         self._worker.done.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
-        self._thread.finished.connect(self._worker.deleteLater)
+        self._worker.done.connect(self._worker.deleteLater)
+        self._worker.failed.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._close_after_background_work)
         self._thread.finished.connect(self._after_ai_thread_finished)
         self._thread.start()
@@ -897,18 +969,23 @@ class MainWindow(QMainWindow):
             self.close()
 
     def run_search(self):
-        if self._search_thread and self._search_thread.isRunning():
+        if self._busy_with_ai():
             return
+        self.check_profile_files()
+        self._finish_pending_file_refreshes()
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
+        if len(self.workflow.source) > 16_000:
+            QMessageBox.warning(self, "SOURCE", "SOURCE เกิน 16,000 ตัวอักษร กรุณาลดเนื้อหาก่อนค้นหา")
+            return
         if not self.workflow.source.strip():
             QMessageBox.information(self, "หาศัพท์", "เปิด SOURCE หรือวางเนื้อหาก่อนเริ่มค้นหา")
             return
-        if not self.settings.model:
+        if not (self.settings.search_model or self.settings.model):
             self.open_settings()
             self.settings = load_settings()
-        if not self.settings.model:
-            QMessageBox.information(self, "Model", "เลือก Default Model ใน Settings ก่อนเริ่มค้นหา")
+        if not (self.settings.search_model or self.settings.model):
+            QMessageBox.information(self, "Model", "เลือก Model หาศัพท์ใน Settings ก่อนเริ่มค้นหา")
             return
         api_key = get(self.settings.provider)
         if not api_key:
@@ -930,10 +1007,11 @@ class MainWindow(QMainWindow):
         self._search_api_key = api_key
         self._search_config = ProviderConfig(
             provider=self.settings.provider,
-            model=self.settings.model,
+            model=self.settings.search_model or self.settings.model,
             base_url=self.settings.base_url,
             timeout=self.settings.timeout,
             retries=self.settings.retries,
+            reuse_results=self.settings.reuse_results,
         )
         if self.search_progress is None or self.search_progress.chunk_count != chunk_count:
             self.search_progress = SearchProgressDialog(self, chunk_count=chunk_count)
@@ -943,6 +1021,8 @@ class MainWindow(QMainWindow):
         self._start_search_worker()
 
     def _start_search_worker(self):
+        for combo in self.prompt_choices.values():
+            combo.setEnabled(False)
         self.search_progress.set_active(True)
         self.cancel_button.setVisible(True)
         for button in self.search_action_buttons.values():
@@ -1084,6 +1164,8 @@ class MainWindow(QMainWindow):
                         "input_sha256": hashlib.sha256(run.chunk.text.encode("utf-8")).hexdigest(),
                         "status": run.status.value,
                         "retry_count": run.retry_count,
+                        "usage": run.usage,
+                        "result_reused": run.result_reused,
                         "raw_response": run.raw_response,
                         "parsed_result": {"new": run.new_rows, "update": run.update_rows},
                         "validation_result": {"passed": run.status == ChunkStatus.COMPLETE, "details": run.error},
@@ -1122,6 +1204,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "บันทึกผลรวมไม่สำเร็จ", str(exc))
 
     def run_polish(self):
+        if self._busy_with_ai():
+            return
+        self.check_profile_files()
+        self._finish_pending_file_refreshes()
         if self.results_stale:
             QMessageBox.information(self, "Polish", "SOURCE หรือ VOCAB เปลี่ยนแล้ว กรุณา Run Search ใหม่ก่อนเกลาศัพท์")
             return
@@ -1134,10 +1220,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Polish", str(e))
             return
-        self.workflow.begin_polish()
         self.request("B", payload)
 
     def on_response(self, raw):
+        self._request_timer.stop()
         self.cancel_button.setVisible(False)
         try:
             if self._step == "A":
@@ -1154,7 +1240,8 @@ class MainWindow(QMainWindow):
                 self.fill_final_table(final)
                 parsed = final
                 valid = True
-                self.statusBar().showMessage("Polish Complete")
+                message = "Polish Complete · ใช้ผลเดิม ไม่เรียก API" if getattr(self._provider, "cache_hit", False) else "Polish Complete"
+                self.statusBar().showMessage(message)
         except Exception as e:
             valid = False
             parsed = []
@@ -1169,8 +1256,17 @@ class MainWindow(QMainWindow):
 
     def save_current_snapshot(self, raw, parsed, valid):
         input_text = self._request.user_input + self._request.source + self._request.vocab
+        def redact(value):
+            secret = self._provider.api_key
+            if isinstance(value, str):
+                return value.replace(secret, "[REDACTED]") if secret else value
+            if isinstance(value, dict):
+                return {key: redact(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            return value
         save_snapshot(
-            {
+            redact({
                 "source_filename": Path(self.source_path).name if self.source_path else "",
                 "vocab_filename": Path(self.vocab_path).name if self.vocab_path else "",
                 "prompt_id": self._selected_prompt["id"],
@@ -1178,16 +1274,20 @@ class MainWindow(QMainWindow):
                 "prompt_version": self._selected_prompt["version"],
                 "exact_prompt_text": self._prompt,
                 "prompt_sha256": hashlib.sha256(self._prompt.encode("utf-8")).hexdigest(),
-                "provider": self.settings.provider,
-                "model": self.settings.model,
+                "provider": self._request_config.provider,
+                "model": self._request_config.model,
+                "usage": getattr(self._provider, "last_usage", {}),
+                "finish_reason": getattr(self._provider, "finish_reason", ""),
+                "result_reused": getattr(self._provider, "cache_hit", False),
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "raw_response": raw,
                 "parsed_result": parsed,
                 "validation_result": {"passed": valid, "details": parsed.get("validation_error", "") if isinstance(parsed, dict) else ""},
-            }
+            })
         )
 
     def on_error(self, msg):
+        self._request_timer.stop()
         self.cancel_button.setVisible(False)
         self.save_current_snapshot("", {"request_error": msg}, False)
         if msg == "Request cancelled":
@@ -1198,6 +1298,8 @@ class MainWindow(QMainWindow):
                 pass
             self.statusBar().showMessage("Cancelled")
             return
+        target = State.SEARCH_FAILED if self._step == "A" else State.POLISH_FAILED
+        self.workflow.state.transition(target)
         box = QMessageBox(self)
         box.setWindowTitle("Request failed")
         box.setText(f"Reason: {msg}")
@@ -1206,7 +1308,8 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() == retry:
             self.retry_same_request()
-        self.statusBar().showMessage("Request failed")
+        else:
+            self.statusBar().showMessage("Request failed")
 
     def cancel_request(self):
         if self._search_thread and self._search_thread.isRunning():
@@ -1217,23 +1320,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Cancelling request…")
 
     def retry_same_request(self):
+        if self._thread and self._thread.isRunning():
+            self._pending_retry = True
+            return
         target = State.SEARCH_RUNNING if self._step == "A" else State.POLISH_RUNNING
-        try:
-            self.workflow.state.transition(target)
-        except ValueError:
-            self.workflow.state.current = State.USER_REVIEW if self._step == "A" else State.POLISH_READY
-            self.workflow.state.transition(target)
-        secret = get(self.settings.provider) or ""
-        self._provider = create_provider(
-            ProviderConfig(
-                provider=self.settings.provider,
-                model=self.settings.model,
-                base_url=self.settings.base_url,
-                timeout=self.settings.timeout,
-                retries=self.settings.retries,
-            ),
-            secret,
-        )
+        self.workflow.state.transition(target)
+        secret = get(self._request_config.provider) or ""
+        self._provider = create_provider(self._request_config, secret)
+        self._request = self._request.model_copy(update={"reuse_result": False})
         self.start_worker(self._provider, self._request)
 
     def validation_failure(self, details, raw):
@@ -1300,6 +1394,8 @@ class MainWindow(QMainWindow):
         self.final_table.resizeColumnsToContents()
 
     def new_session(self):
+        if self._busy_with_ai():
+            return
         self.workflow = Workflow()
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
@@ -1316,16 +1412,43 @@ class MainWindow(QMainWindow):
             self._save_profile_state()
             self.apply_theme()
 
-    def prompt_manager(self):
-        dialog = PromptManagerDialog(self)
+    def refresh_prompt_choices(self):
+        for step, combo in self.prompt_choices.items():
+            category = "Search" if step == "A" else "Polish"
+            prompt_id = self.settings.selected_search_prompt if step == "A" else self.settings.selected_polish_prompt
+            combo.blockSignals(True)
+            combo.clear()
+            for prompt in list_prompts():
+                if prompt["category"] == category:
+                    combo.addItem(f"{prompt['name']} · v{prompt['version']}", prompt["id"])
+            combo.setCurrentIndex(combo.findData(prompt_id))
+            combo.blockSignals(False)
+
+    def choose_prompt(self, step):
+        prompt_id = self.prompt_choices[step].currentData()
+        if not prompt_id:
+            return
+        if step == "A":
+            self.settings.selected_search_prompt = prompt_id
+            self._mark_results_stale()
+        else:
+            self.settings.selected_polish_prompt = prompt_id
+        save_settings(self.settings)
+        self._save_profile_state()
+
+    def prompt_manager(self, step=None):
+        category = "Search" if step == "A" else "Polish" if step == "B" else None
+        dialog = PromptManagerDialog(self, category)
         if dialog.exec() and dialog.selected_prompt:
             prompt = dialog.selected_prompt
             if prompt["category"] == "Search":
                 self.settings.selected_search_prompt = prompt["id"]
+                self._mark_results_stale()
             else:
                 self.settings.selected_polish_prompt = prompt["id"]
             save_settings(self.settings)
             self._save_profile_state()
+        self.refresh_prompt_choices()
 
     def history_dialog(self):
         entries = list_history()

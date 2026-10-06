@@ -26,6 +26,8 @@ class ChunkRun:
     error: str = ""
     attempts: list[dict] = field(default_factory=list)
     split_depth: int = 0
+    usage: dict = field(default_factory=dict)
+    result_reused: bool = False
 
 
 @dataclass(frozen=True)

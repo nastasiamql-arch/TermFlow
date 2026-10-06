@@ -9,6 +9,9 @@ class GenerateRequest(BaseModel):
     source: str = ""
     vocab: str = ""
     user_input: str = ""
+    validation_step: str = ""
+    expected_rows: list[list[str]] = []
+    reuse_result: bool = True
 
 
 class AIProvider(ABC):

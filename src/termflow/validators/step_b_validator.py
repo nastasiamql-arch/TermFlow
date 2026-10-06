@@ -8,13 +8,17 @@ COPY_READY = "=== COPY-READY TSV ==="
 
 def validate_step_b(raw: str, input_rows: list[list[str]]) -> list[list[str]]:
     # Analysis is allowed, but the copy-ready region must be clearly delimited.
-    if raw.count(COPY_READY) != 1:
-        raise ValidationError([f"Expected one '{COPY_READY}' block"])
-    block = raw.split(COPY_READY, 1)[1].strip()
+    markers = list(re.finditer(r"(?m)^\s*(?:=== COPY-READY TSV ===|#{1,6}\s*(?:ส่วนที่\s*3:\s*)?ผลลัพธ์ TSV[^\n]*)\s*$", raw))
+    if len(markers) > 1:
+        raise ValidationError(["Expected exactly one copy-ready TSV section"])
+    block = raw[markers[0].end():].strip() if markers else raw.strip()
     if block.startswith("```"):
-        match = re.fullmatch(r"```(?:text|tsv)?[ \t]*\r?\n(.*?)\r?\n```", block, flags=re.IGNORECASE | re.DOTALL)
+        match = re.match(r"```(?:text|tsv)?[ \t]*\r?\n(.*?)\r?\n```(?=\s|$)", block, flags=re.IGNORECASE | re.DOTALL)
         if not match:
             raise ValidationError(["Markdown contamination in copy-ready block"])
+        trailing = block[match.end():]
+        if "\t" in trailing or (not markers and trailing.strip()):
+            raise ValidationError(["Ambiguous content after copy-ready block"])
         block = match.group(1).strip()
     elif "```" in block:
         raise ValidationError(["Markdown contamination in copy-ready block"])

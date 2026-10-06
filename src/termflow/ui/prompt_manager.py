@@ -1,5 +1,9 @@
+from pathlib import Path
+
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -11,6 +15,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from termflow.core.prompt_loader import import_prompt_text
 from termflow.core.prompts import create_prompt, delete_prompt, list_prompts, save_prompt
 
 
@@ -23,11 +28,18 @@ class PromptManagerDialog(QDialog):
         self.selected_prompt = None
         layout = QHBoxLayout(self)
         left = QVBoxLayout()
+        self.category_choice = QComboBox()
+        self.category_choice.addItems(["Search", "Polish"])
+        self.category_choice.setCurrentText(category or "Search")
+        self.category_choice.setEnabled(category is None)
+        left.addWidget(QLabel("ประเภท Prompt ใหม่ / นำเข้า"))
+        left.addWidget(self.category_choice)
         self.items = QListWidget()
         self.items.currentItemChanged.connect(self.show_item)
         left.addWidget(self.items)
         for text, callback in [
             ("New", self.new_prompt),
+            ("นำเข้าไฟล์ Prompt", self.import_prompt),
             ("Duplicate", self.duplicate_prompt),
             ("Rename", self.rename_prompt),
             ("Delete", self.remove_prompt),
@@ -59,7 +71,7 @@ class PromptManagerDialog(QDialog):
             self.items.addItem(item)
             if prompt["id"] == select_id:
                 self.items.setCurrentItem(item)
-        self.save_button.setEnabled(False)
+        self.show_item()
 
     def current(self):
         prompt_id = self.items.currentItem().data(256) if self.items.currentItem() else None
@@ -77,11 +89,22 @@ class PromptManagerDialog(QDialog):
         self.save_button.setEnabled(not prompt["is_builtin"])
 
     def new_prompt(self):
-        category = self.category or "Search"
+        category = self.category or self.category_choice.currentText()
         name, ok = QInputDialog.getText(self, "New Prompt", "Name")
         if ok and name:
             result = create_prompt(name, category)
             self.refresh(result["id"])
+
+    def import_prompt(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "นำเข้า Prompt", "", "Prompt (*.md *.txt *.docx)")
+        if not filename:
+            return
+        try:
+            text = import_prompt_text(Path(filename))
+            result = create_prompt(Path(filename).stem, self.category or self.category_choice.currentText(), text)
+            self.refresh(result["id"])
+        except Exception as exc:
+            QMessageBox.warning(self, "นำเข้า Prompt ไม่สำเร็จ", str(exc))
 
     def duplicate_prompt(self):
         prompt = self.current()
@@ -119,6 +142,11 @@ class PromptManagerDialog(QDialog):
     def select_prompt(self):
         prompt = self.current()
         if prompt:
+            if not prompt["is_builtin"] and self.content.toPlainText() != prompt["content"]:
+                prompt = save_prompt(prompt["id"], name=prompt["name"], content=self.content.toPlainText())
+            if not prompt["content"].strip():
+                QMessageBox.warning(self, "Prompt", "Prompt ว่าง กรุณาใส่คำสั่งก่อนเลือก")
+                return
             self.selected_prompt = prompt
             self.accept()
 
