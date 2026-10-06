@@ -238,13 +238,11 @@ class SettingsDialog(QDialog):
             if count == 1:
                 label = "1 ช่วง · แนะนำสำหรับ SOURCE ไม่เกิน 16,000 ตัวอักษร"
             else:
-                lower = count * 5_000
-                upper = count * 10_000
-                label = f"{count} ช่วง · เหมาะกับประมาณ {lower:,}–{upper:,} ตัวอักษร"
+                label = f"{count} ช่วง · SOURCE รวมได้ไม่เกิน {count * 16_000:,} ตัวอักษร"
             self.search_chunks.addItem(label, count)
             self.search_chunks.setItemData(
                 self.search_chunks.count() - 1,
-                f"แบ่ง SOURCE เป็น {count} คำขอ · โดยประมาณ {5_000:,}–{10_000:,} ตัวอักษรต่อช่วง",
+                f"แบ่ง SOURCE เป็น {count} คำขอ · สูงสุด 16,000 ตัวอักษรต่อคำขอ รวมข้อความเหลื่อม",
                 Qt.ToolTipRole,
             )
         selected = self.search_chunks.findData(settings.search_chunks)
@@ -982,9 +980,6 @@ class MainWindow(QMainWindow):
         self._finish_pending_file_refreshes()
         self.workflow.source = self.source_view.toPlainText()
         self.workflow.vocab = self.vocab_view.toPlainText()
-        if len(self.workflow.source) > 16_000:
-            QMessageBox.warning(self, "SOURCE", "SOURCE เกิน 16,000 ตัวอักษร กรุณาลดเนื้อหาก่อนค้นหา")
-            return
         if not self.workflow.source.strip():
             QMessageBox.information(self, "หาศัพท์", "เปิด SOURCE หรือวางเนื้อหาก่อนเริ่มค้นหา")
             return
@@ -1006,13 +1001,14 @@ class MainWindow(QMainWindow):
         if not selected_prompt or not selected_prompt.get("content", "").strip():
             QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
             return
+        chunk_count = self.settings.search_chunks
         try:
+            chunks = split_source(self.workflow.source, count=chunk_count, overlap_units=1, max_request_chars=16_000)
             self.workflow.begin_search()
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", str(exc))
             return
-        chunk_count = self.settings.search_chunks
-        self._search_batch = SearchBatch(split_source(self.workflow.source, count=chunk_count, overlap_units=1))
+        self._search_batch = SearchBatch(chunks)
         self._search_prompt = selected_prompt["content"]
         self._search_selected_prompt = selected_prompt
         self._search_api_key = api_key

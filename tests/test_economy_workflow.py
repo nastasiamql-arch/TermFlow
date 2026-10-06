@@ -92,6 +92,35 @@ def test_search_16000_characters_is_one_request(window, monkeypatch):
     assert win._search_batch.runs[0].chunk.text == "文" * 16_000
 
 
+def test_search_two_chunks_accepts_source_over_16000(window, monkeypatch):
+    win, _app = window
+    monkeypatch.setattr(win, "_start_search_worker", lambda: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args: None)
+    win.settings.search_chunks = 2
+    win.source_view.setPlainText("文" * 32_000)
+    win.run_search()
+    assert win._search_batch is not None
+    assert len(win._search_batch.runs) == 2
+    assert all(len(run.chunk.text) <= 16_000 for run in win._search_batch.runs)
+    chunks = win._search_batch.chunks
+    assert chunks[0].core_start == 0
+    assert chunks[0].core_end == chunks[1].core_start
+    assert chunks[1].core_end == 32_000
+
+
+def test_too_few_chunks_does_not_start_request_or_change_state(window, monkeypatch):
+    win, _app = window
+    messages = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, _title, message: messages.append(message))
+    win.settings.search_chunks = 1
+    win.source_view.setPlainText("文" * 16_001)
+    state = win.workflow.state.current
+    win.run_search()
+    assert win._search_batch is None
+    assert win.workflow.state.current == state
+    assert "เลือกอย่างน้อย 2 ช่วง" in messages[0]
+
+
 def test_polish_preflight_failure_does_not_enter_running(window, monkeypatch):
     import termflow.main as main
     win, _app = window
