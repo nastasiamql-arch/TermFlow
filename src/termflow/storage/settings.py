@@ -17,6 +17,7 @@ class Settings(BaseModel):
     timeout: int = Field(default=900, ge=30, le=1800)
     retries: int = Field(default=0, ge=0, le=10)
     search_chunks: int = Field(default=1, ge=1, le=20)
+    context_window: int = Field(default=1_000_000, ge=16_384, le=1_000_000)
     search_model: str = ""
     polish_model: str = ""
     reuse_results: bool = True
