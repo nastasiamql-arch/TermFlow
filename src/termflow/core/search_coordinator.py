@@ -66,23 +66,16 @@ class SearchCoordinator:
             provider = self.provider_factory(self.config, self.api_key)
             with self._providers_lock:
                 self._providers[run.chunk.index] = provider
+            started = monotonic()
             try:
-                started = monotonic()
-                try:
-                    raw = self._generate_part(provider, run, run.chunk.text, depth=0, suffix="")
-                finally:
-                    run.duration_seconds += monotonic() - started
-                if self.cancelled.is_set():
-                    return
-                self.batch.mark_validating(run.chunk.index)
-                self._notify(run, "กำลังตรวจรูปแบบผลลัพธ์")
-                accepted = self.batch.accept_response(run.chunk.index, raw)
-            except _SplitCompleted as split_result:
-                if self.cancelled.is_set():
-                    return
-                self.batch.mark_validating(run.chunk.index)
-                self._notify(run, "ตรวจผลส่วนย่อย")
-                accepted = self.batch.accept_split_responses(run.chunk.index, split_result.responses)
+                raw = self._generate_part(provider, run, run.chunk.text)
+            finally:
+                run.duration_seconds += monotonic() - started
+            if self.cancelled.is_set():
+                return
+            self.batch.mark_validating(run.chunk.index)
+            self._notify(run, "กำลังตรวจรูปแบบผลลัพธ์")
+            accepted = self.batch.accept_response(run.chunk.index, raw)
             message = "แก้เฉพาะรูปแบบในเครื่อง · ไม่เรียก API ซ้ำ" if run.origin == "local_repair_no_api" else ""
             self._notify(run, message if accepted else run.error)
         except Exception as exc:
@@ -96,7 +89,7 @@ class SearchCoordinator:
             with self._providers_lock:
                 self._providers.pop(run.chunk.index, None)
 
-    def _generate_part(self, provider, run: ChunkRun, source: str, *, depth: int, suffix: str) -> str:
+    def _generate_part(self, provider, run: ChunkRun, source: str) -> str:
         if self.cancelled.is_set():
             raise InterruptedError("Request cancelled")
         request = GenerateRequest(
@@ -107,7 +100,6 @@ class SearchCoordinator:
                 "Return the requested result only. Do not write or modify files. "
                 f"This is SOURCE part {run.chunk.index} of {len(self.batch.runs)}. "
                 "Apply the exact system Prompt to every line of this part."
-                f"{suffix}"
             ),
         )
         key = cache_key(
@@ -178,8 +170,3 @@ class SearchCoordinator:
                 if run.status == ChunkStatus.CANCELLED:
                     self._notify(run, "Cancelled")
         return self.batch
-
-
-class _SplitCompleted(Exception):
-    def __init__(self, responses: list[str]):
-        self.responses = responses
