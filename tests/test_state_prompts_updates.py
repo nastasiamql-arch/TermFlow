@@ -37,6 +37,27 @@ def test_existing_settings_values_are_preserved():
     assert (old.search_chunks, old.retries, old.timeout) == (4, 2, 600)
 
 
+def test_search_and_polish_can_resolve_different_models():
+    from termflow.storage.settings import Settings
+
+    settings = Settings(model="default-model", search_model="expensive-search", polish_model="cheap-polish")
+    assert settings.model_for_step("A") == "expensive-search"
+    assert settings.model_for_step("B") == "cheap-polish"
+    assert Settings(model="fallback").model_for_step("A") == "fallback"
+    assert Settings(model="fallback").model_for_step("B") == "fallback"
+
+
+def test_old_short_timeout_is_clamped_without_losing_other_settings(tmp_path, monkeypatch):
+    import termflow.storage.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "APPDATA", tmp_path)
+    settings_module.settings_path().write_text('{"timeout": 10, "search_chunks": 4, "retries": 2}', encoding="utf-8")
+    loaded = settings_module.load_settings()
+    assert loaded.timeout == 30
+    assert loaded.search_chunks == 4
+    assert loaded.retries == 2
+
+
 def test_builtin_prompts_match_saved_text():
     from termflow.core.prompts import list_prompts
     from termflow.storage.paths import PROMPTS

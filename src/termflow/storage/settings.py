@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,13 @@ class Settings(BaseModel):
     theme: str = "System"
     debug: bool = False
 
+    def model_for_step(self, step: str) -> str:
+        if step == "A":
+            return self.search_model or self.model
+        if step == "B":
+            return self.polish_model or self.model
+        raise ValueError(f"Unknown workflow step: {step}")
+
 
 def settings_path() -> Path:
     return APPDATA / "settings.json"
@@ -32,12 +40,17 @@ def settings_path() -> Path:
 
 def load_settings() -> Settings:
     try:
-        settings = Settings.model_validate_json(settings_path().read_text("utf-8"))
+        values = json.loads(settings_path().read_text("utf-8"))
+        # Older releases allowed shorter response timeouts. Clamp only that field
+        # to the new supported range while retaining all unrelated preferences.
+        if isinstance(values, dict) and "timeout" in values:
+            values["timeout"] = min(1800, max(30, int(values["timeout"])))
+        settings = Settings.model_validate(values)
         # 11 pt was the previous default and rendered too small on common displays.
         if settings.font_size == 11:
             settings.font_size = 12
         return settings
-    except (OSError, ValueError):
+    except (OSError, TypeError, ValueError):
         return Settings()
 
 

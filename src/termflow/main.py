@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from time import monotonic
@@ -40,12 +41,14 @@ from PySide6.QtWidgets import (
 from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
+from termflow.core.local_repair import repair_formatting
 from termflow.core.result_cache import ResultCache, cache_key
 from termflow.core.logging_config import configure_logging
 from termflow.core.prompts import list_prompts
-from termflow.core.request_planner import plan_search
-from termflow.core.search_batch import ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
-from termflow.core.search_chunks import split_source
+from termflow.core.request_planner import estimate_tokens, plan_search
+from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
+from termflow.core.search_chunks import SourceChunk, split_source
+from termflow.core.search_coordinator import SearchCoordinator
 from termflow.core.search_export import format_step_a_result
 from termflow.core.state_machine import State
 from termflow.core.workflow import Workflow
@@ -842,11 +845,11 @@ class MainWindow(QMainWindow):
         return next((x for x in list_prompts() if x["id"] == prompt_id and x["category"] == category), None)
 
     def request(self, step, user_input=""):
-        selected_model = (self.settings.search_model or self.settings.model) if step == "A" else (self.settings.polish_model or self.settings.model)
+        selected_model = self.settings.model_for_step(step)
         if not selected_model:
             self.open_settings()
             self.settings = load_settings()
-            selected_model = (self.settings.search_model or self.settings.model) if step == "A" else (self.settings.polish_model or self.settings.model)
+            selected_model = self.settings.model_for_step(step)
         secret = get(self.settings.provider)
         if not secret:
             QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
@@ -949,10 +952,10 @@ class MainWindow(QMainWindow):
         if not self.workflow.source.strip():
             QMessageBox.information(self, "หาศัพท์", "เปิด SOURCE หรือวางเนื้อหาก่อนเริ่มค้นหา")
             return
-        if not (self.settings.search_model or self.settings.model):
+        if not self.settings.model_for_step("A"):
             self.open_settings()
             self.settings = load_settings()
-        if not (self.settings.search_model or self.settings.model):
+        if not self.settings.model_for_step("A"):
             QMessageBox.information(self, "Model", "เลือก Default Model ใน Settings ก่อนเริ่มค้นหา")
             return
         api_key = get(self.settings.provider)
@@ -968,23 +971,31 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", f"คำนวณขนาดคำขอไม่สำเร็จ: {exc}")
             return
+        chunk_count = max(plan.chunk_count, self.settings.search_chunks)
+        estimated_total = plan.estimated_total_tokens + max(0, chunk_count - plan.chunk_count) * (
+            estimate_tokens(selected_prompt["content"]) + estimate_tokens(self.workflow.vocab) + 256
+        )
+        preview = (
+            f"SOURCE: {len(self.workflow.source):,} characters\n"
+            f"Estimated API requests: {chunk_count}\n"
+            f"Estimated input: ~{estimated_total:,} tokens"
+            + ("\nPrompt และ VOCAB จะถูกส่งซ้ำในแต่ละ request" if chunk_count > 1 else "")
+            + "\n\nเริ่ม Search หรือไม่?"
+        )
+        if QMessageBox.question(self, "Search request preview", preview) != QMessageBox.Yes:
+            return
         try:
             self.workflow.begin_search()
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", str(exc))
             return
-        chunk_count = max(plan.chunk_count, self.settings.search_chunks)
-        self.statusBar().showMessage(
-            f"SOURCE {len(self.workflow.source):,} chars · Estimated API requests: {chunk_count} · Estimated input: ~{plan.estimated_total_tokens:,} tokens"
-            + (f" · {plan.warning}" if plan.warning else "")
-        )
         self._search_batch = SearchBatch(split_source(self.workflow.source, count=chunk_count, overlap_units=1))
         self._search_prompt = selected_prompt["content"]
         self._search_selected_prompt = selected_prompt
         self._search_api_key = api_key
         self._search_config = ProviderConfig(
             provider=self.settings.provider,
-            model=self.settings.search_model or self.settings.model,
+            model=self.settings.model_for_step("A"),
             base_url=self.settings.base_url,
             timeout=self.settings.timeout,
             retries=self.settings.retries,
@@ -994,6 +1005,7 @@ class MainWindow(QMainWindow):
             self.search_progress = SearchProgressDialog(self, chunk_count=chunk_count)
             self.search_progress.cancel_requested.connect(self.cancel_search_batch)
             self.search_progress.retry_requested.connect(self.retry_failed_chunks)
+            self.search_progress.split_requested.connect(self.split_failed_chunk)
         self.search_progress.show()
         self._start_search_worker()
 
@@ -1042,6 +1054,55 @@ class MainWindow(QMainWindow):
         for run in failed:
             self._search_batch.retry_chunk(run.chunk.index)
         self._search_batch.resume()
+        try:
+            self.workflow.state.transition(State.SEARCH_RUNNING)
+        except ValueError:
+            pass
+        self._start_search_worker()
+
+    def split_failed_chunk(self):
+        if self._search_thread and self._search_thread.isRunning():
+            return
+        failed = next((run for run in self._search_batch.runs if run.status == ChunkStatus.FAILED), None)
+        if failed is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "แบ่ง SOURCE ช่วงที่ล้มเหลว",
+            "ช่วงนี้จะถูกแบ่งเป็นสูงสุด 2 API requests (ผลที่ cache ตรงกันอาจ reuse ได้) และ Prompt กับ VOCAB จะถูกส่งซ้ำในแต่ละ request\n"
+            f"คำขอที่ timeout ไปแล้ว: {failed.request_count} · ดำเนินการต่อหรือไม่?",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        first, second = SearchCoordinator._split_source(failed.chunk.text)
+        if not first.strip() or not second.strip():
+            QMessageBox.warning(self, "แบ่งช่วงไม่ได้", "ช่วงนี้สั้นเกินกว่าจะแบ่งเป็นคำขอที่มีข้อความทั้งสองส่วน")
+            return
+        start = failed.chunk.request_start
+        middle = start + len(first)
+        child_runs = [
+            ChunkRun(SourceChunk(0, start, middle, start, middle, first)),
+            ChunkRun(SourceChunk(0, middle, failed.chunk.request_end, middle, failed.chunk.request_end, second)),
+        ]
+        child_runs[0].request_count = failed.request_count
+        child_runs[0].retry_count = failed.retry_count
+        child_runs[0].attempts = list(failed.attempts)
+        runs = []
+        for run in self._search_batch.runs:
+            if run is failed:
+                runs.extend(child_runs)
+            else:
+                runs.append(run)
+        for index, run in enumerate(runs, 1):
+            run.chunk = replace(run.chunk, index=index)
+        self._search_batch.runs = runs
+        self._search_batch.chunks = tuple(run.chunk for run in runs)
+        self.search_progress.close()
+        self.search_progress = SearchProgressDialog(self, chunk_count=len(runs))
+        self.search_progress.cancel_requested.connect(self.cancel_search_batch)
+        self.search_progress.retry_requested.connect(self.retry_failed_chunks)
+        self.search_progress.split_requested.connect(self.split_failed_chunk)
+        self.search_progress.show()
         try:
             self.workflow.state.transition(State.SEARCH_RUNNING)
         except ValueError:
@@ -1148,7 +1209,9 @@ class MainWindow(QMainWindow):
                         "usage": run.usage,
                         "cache_hit": run.cache_hit,
                         "duration_seconds": run.duration_seconds,
-                        "raw_response": run.raw_response,
+                        "raw_response": run.original_response or run.raw_response,
+                        "repaired_response": run.repaired_response,
+                        "origin": run.origin,
                         "parsed_result": {"new": run.new_rows, "update": run.update_rows},
                         "validation_result": {"passed": run.status == ChunkStatus.COMPLETE, "details": run.error},
                         "attempts": run.attempts,
@@ -1211,6 +1274,9 @@ class MainWindow(QMainWindow):
 
     def on_response(self, raw):
         self.cancel_button.setVisible(False)
+        original_raw = raw
+        repaired_response = ""
+        self._local_repair_response = ""
         try:
             if self._step == "A":
                 new, updates = self.workflow.accept_search(raw)
@@ -1222,6 +1288,15 @@ class MainWindow(QMainWindow):
                 valid = True
                 self.statusBar().showMessage("Search Complete")
             else:
+                try:
+                    validate_step_b(raw, [line.split("\t") for line in self._b_input().splitlines()])
+                except Exception:
+                    repaired_response = repair_formatting(raw, "B") or ""
+                    if not repaired_response:
+                        raise
+                    validate_step_b(repaired_response, [line.split("\t") for line in self._b_input().splitlines()])
+                    raw = repaired_response
+                    self._local_repair_response = repaired_response
                 final = self.workflow.accept_polish(raw, self._b_input())
                 self.fill_final_table(final)
                 parsed = final
@@ -1231,13 +1306,16 @@ class MainWindow(QMainWindow):
             valid = False
             parsed = []
             self.statusBar().showMessage("Validation Failed")
-            self.save_current_snapshot(raw, {"validation_error": str(e)}, valid)
+            self.save_current_snapshot(original_raw, {"validation_error": str(e)}, valid)
             self.validation_failure(str(e), raw)
             return
-        self.save_current_snapshot(raw, parsed, valid)
+        self.save_current_snapshot(original_raw, parsed, valid)
         if valid and self.settings.reuse_results and getattr(self, "_request_cache_key", None) and self._step == "B":
             validator = lambda value: validate_step_b(value, [line.split("\t") for line in self._b_input().splitlines()])
-            ResultCache().put(self._request_cache_key, raw, validator)
+            secret = get(self.settings.provider) or ""
+            cache_result = repaired_response or raw
+            if not secret or secret not in cache_result:
+                ResultCache().put(self._request_cache_key, cache_result, validator)
 
     def _b_input(self):
         return "\n".join(x.b_input for x in self.workflow.adapted)
@@ -1264,6 +1342,7 @@ class MainWindow(QMainWindow):
                 "cache_hit": getattr(self, "_cache_hit", False),
                 "duration_seconds": max(0.0, monotonic() - getattr(self, "_request_started_at", monotonic())),
                 "timeout_seconds": self.settings.timeout,
+                "repaired_response": getattr(self, "_local_repair_response", ""),
             }
         )
 
@@ -1281,6 +1360,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("Request failed")
         box.setText(f"Reason: {msg}")
+        box.setInformativeText("การลองใหม่จะสร้าง API request ใหม่และอาจมีค่าใช้จ่าย")
         retry = box.addButton("Retry", QMessageBox.AcceptRole)
         box.addButton("Cancel", QMessageBox.RejectRole)
         box.exec()
@@ -1307,7 +1387,7 @@ class MainWindow(QMainWindow):
         self._provider = create_provider(
             ProviderConfig(
                 provider=self.settings.provider,
-                model=(self.settings.search_model or self.settings.model) if self._step == "A" else (self.settings.polish_model or self.settings.model),
+                model=self.settings.model_for_step(self._step),
                 base_url=self.settings.base_url,
                 timeout=self.settings.timeout,
                 retries=self.settings.retries,
@@ -1320,7 +1400,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("STRICT VALIDATION FAILED")
         box.setText("AI output did not pass strict validation.")
-        box.setInformativeText(details)
+        box.setInformativeText(f"{details}\n\nการลองใหม่จะสร้าง API request ใหม่และอาจมีค่าใช้จ่าย")
         retry = box.addButton("Retry Same Request", QMessageBox.AcceptRole)
         view = box.addButton("View Raw Response", QMessageBox.ActionRole)
         copy = box.addButton("Copy Raw Response", QMessageBox.ActionRole)

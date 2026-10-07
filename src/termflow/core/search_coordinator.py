@@ -9,6 +9,7 @@ from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch
 from termflow.core.result_cache import ResultCache, cache_key
+from termflow.core.local_repair import repair_formatting
 from termflow.validators.step_a_validator import validate_step_a
 
 ProgressCallback = Callable[[int, str, str, int, int], None]
@@ -82,7 +83,8 @@ class SearchCoordinator:
                 self.batch.mark_validating(run.chunk.index)
                 self._notify(run, "ตรวจผลส่วนย่อย")
                 accepted = self.batch.accept_split_responses(run.chunk.index, split_result.responses)
-            self._notify(run, "" if accepted else run.error)
+            message = "แก้เฉพาะรูปแบบในเครื่อง · ไม่เรียก API ซ้ำ" if run.origin == "local_repair_no_api" else ""
+            self._notify(run, message if accepted else run.error)
         except Exception as exc:
             if not self.cancelled.is_set():
                 if "provider" in locals():
@@ -120,10 +122,21 @@ class SearchCoordinator:
                 return cached
         try:
             raw = provider.generate(request)
+            run.original_response = raw
             run.request_count += getattr(provider, "request_count", 1)
             run.usage = {"raw": getattr(provider, "last_usage", {}), **getattr(provider, "normalized_usage", lambda: {})()}
-            validate_step_a(raw)
-            if getattr(self.config, "reuse_results", True):
+            try:
+                validate_step_a(raw)
+            except Exception:
+                repaired = repair_formatting(raw, "A")
+                if repaired is None:
+                    raise
+                validate_step_a(repaired)
+                run.original_response = raw
+                run.repaired_response = repaired
+                run.origin = "local_repair_no_api"
+                raw = repaired
+            if getattr(self.config, "reuse_results", True) and (not self.api_key or self.api_key not in raw):
                 self.result_cache.put(key, raw, validate_step_a)
             return raw
         except httpx.ReadTimeout as exc:

@@ -45,6 +45,7 @@ class MultiSearchWorker(QObject):
 class SearchProgressDialog(QDialog):
     cancel_requested = Signal()
     retry_requested = Signal()
+    split_requested = Signal()
 
     LABELS = {
         "pending": "รอทำงาน",
@@ -56,7 +57,7 @@ class SearchProgressDialog(QDialog):
         "cancelled": "ยกเลิก",
     }
 
-    def __init__(self, parent=None, chunk_count=3):
+    def __init__(self, parent=None, chunk_count=1):
         super().__init__(parent)
         self.chunk_count = chunk_count
         self.setWindowTitle(f"ค้นหาศัพท์ {chunk_count} ช่วง")
@@ -77,10 +78,14 @@ class SearchProgressDialog(QDialog):
         buttons = QHBoxLayout()
         self.retry = QPushButton("ลองช่วงที่ผิดพลาดอีกครั้ง")
         self.retry.setEnabled(False)
+        self.split = QPushButton("แบ่งช่วงที่ผิดพลาด")
+        self.split.setEnabled(False)
         self.close_button = QPushButton("ยกเลิก")
         self.retry.clicked.connect(self.retry_requested.emit)
+        self.split.clicked.connect(self.split_requested.emit)
         self.close_button.clicked.connect(self._close_or_cancel)
         buttons.addWidget(self.retry)
+        buttons.addWidget(self.split)
         buttons.addStretch()
         buttons.addWidget(self.close_button)
         layout.addLayout(buttons)
@@ -124,6 +129,7 @@ class SearchProgressDialog(QDialog):
         if batch is None:
             self.summary.setText(f"เสร็จ {completed}/{self.chunk_count} ช่วง · ผิดพลาด {failed} ช่วง")
         self.retry.setEnabled(not self.active and failed > 0)
+        self.split.setEnabled(not self.active and failed > 0)
 
     def set_batch(self, batch):
         for run in batch.runs:
@@ -141,6 +147,7 @@ class SearchProgressDialog(QDialog):
             self.timeout_seconds = getattr(getattr(self.parent(), "_search_config", None), "timeout", 900)
             self.timer.start()
             self.retry.setEnabled(False)
+            self.split.setEnabled(False)
         else:
             self.timer.stop()
 
