@@ -235,6 +235,7 @@ class SettingsDialog(QDialog):
         self.retries = QLineEdit(str(settings.retries))
         self.search_model = QLineEdit(settings.search_model)
         self.polish_model = QLineEdit(settings.polish_model)
+        self.context_window = QLineEdit(str(settings.context_window))
         self.reuse_results = QCheckBox("ใช้ผลเดิมเมื่อ SOURCE / VOCAB / Prompt / Model เหมือนเดิม")
         self.reuse_results.setChecked(settings.reuse_results)
         self.search_chunks = QComboBox()
@@ -286,6 +287,8 @@ class SettingsDialog(QDialog):
         advanced_form.addRow("Search model (ว่าง = Default)", self.search_model)
         advanced_form.addRow("Polish model (ว่าง = Default)", self.polish_model)
         advanced_form.addRow("SOURCE chunks (advanced)", self.search_chunks)
+        advanced_form.addRow("Search context window (tokens)", self.context_window)
+        advanced_form.addRow("", QLabel("Input สูงสุด 1,000,000 tokens · Output ใช้ค่าเดิมที่กำหนดโดย Provider/API"))
         advanced_form.addRow("", QLabel("การ retry อาจสร้างค่า API เพิ่ม · 1–20 chunks"))
         advanced_form.addRow("", self.reuse_results)
         advanced_form.addRow("", self.manage_prompts)
@@ -305,6 +308,9 @@ class SettingsDialog(QDialog):
         try:
             timeout_minutes = float(self.timeout.text())
             retries = int(self.retries.text())
+            context_window = int(self.context_window.text())
+            if not 16_384 <= context_window <= 1_000_000:
+                raise ValueError("Search context window ต้องอยู่ระหว่าง 16,384–1,000,000 tokens")
             if not 0.5 <= timeout_minutes <= 30:
                 raise ValueError("AI response timeout ต้องอยู่ระหว่าง 0.5–30 นาที (30–1800 วินาที)")
             if not 0 <= retries <= 10:
@@ -320,6 +326,7 @@ class SettingsDialog(QDialog):
         s.timeout = round(timeout_minutes * 60)
         s.retries = retries
         s.search_chunks = int(self.search_chunks.currentData())
+        s.context_window = context_window
         s.search_model = self.search_model.text().strip()
         s.polish_model = self.polish_model.text().strip()
         s.reuse_results = self.reuse_results.isChecked()
@@ -981,7 +988,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
             return
         try:
-            plan = plan_search(selected_prompt["content"], self.workflow.vocab, self.workflow.source, context_window=128_000)
+            plan = plan_search(
+                selected_prompt["content"],
+                self.workflow.vocab,
+                self.workflow.source,
+                context_window=self.settings.context_window,
+            )
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", f"คำนวณขนาดคำขอไม่สำเร็จ: {exc}")
             return
