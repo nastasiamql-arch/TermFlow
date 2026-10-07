@@ -24,6 +24,22 @@ def test_vocab_read_is_non_mutating(tmp_path: Path):
     assert before == after
 
 
+def test_search_can_run_again_after_polish():
+    workflow = Workflow()
+    workflow.source = "Chinese source text"
+    workflow.begin_search()
+    new, _ = workflow.accept_search(f"{NEW}\n林雪\tหลินเสวี่ย\tหญิง\tศิษย์\n{UPDATE}\n{EMPTY}")
+    b_input = workflow.prepare_polish(new)
+    workflow.begin_polish()
+    b_rows = "\n".join("\t".join([cn, th, "polished note"]) for cn, th, _note in (x.split("\t") for x in b_input.splitlines()))
+    workflow.accept_polish(f"{COPY_READY}\n{b_rows}", b_input)
+
+    workflow.begin_search()
+    assert workflow.state.current.value == "SEARCH_RUNNING"
+    new_again, _ = workflow.accept_search(f"{NEW}\n林雪\tหลินเสวี่ย\tหญิง\tศิษย์ใหม่\n{UPDATE}\n{EMPTY}")
+    assert new_again[0][3] == "ศิษย์ใหม่"
+
+
 def test_prompt_loader_preserves_source(tmp_path: Path):
     p = tmp_path / "prompt.md"
     p.write_bytes(b"Exact\r\nPrompt\r\n")
