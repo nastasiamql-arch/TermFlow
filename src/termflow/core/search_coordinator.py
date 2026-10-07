@@ -135,7 +135,6 @@ class SearchCoordinator:
             run.request_count += max(0, getattr(provider, "request_count", 1))
             raise httpx.ReadTimeout(
                 f"AI response timeout after {self.config.timeout} seconds. No automatic retry was sent.",
-                request=exc.request,
             ) from exc
 
     @staticmethod

@@ -20,7 +20,10 @@ def test_exact_identity_cache_reuses_only_matching_key_and_valid_values(tmp_path
                          ("model", "model-b"), ("provider", "compatible"),
                          ("base_url", "https://other.test"), ("user_input", "other")):
         assert cache.get(identity(**{field: value}), lambda _: True) is None
-    assert cache.get(key, lambda _: False) is None
+    def reject(_value):
+        raise ValueError("does not validate")
+
+    assert cache.get(key, reject) is None
 
 
 def test_corrupt_cache_is_ignored(tmp_path):
