@@ -99,7 +99,10 @@ class SearchProgressDialog(QDialog):
     def refresh_elapsed(self):
         elapsed = int(monotonic() - self.started_at)
         minutes, seconds = divmod(elapsed, 60)
-        self.summary.setText(f"กำลังประมวลผล · {minutes:02}:{seconds:02} · TermFlow กำลังรอ AI response · Timeout สูงสุด {self.timeout_seconds // 60} นาที")
+        self.summary.setText(
+            f"กำลังประมวลผล · {minutes:02}:{seconds:02} · TermFlow กำลังรอ AI response · "
+            f"Timeout สูงสุด {self.timeout_seconds // 60} นาที"
+        )
 
     def update_chunk(self, index, status, message, new_count, update_count):
         row = index - 1
@@ -121,7 +124,10 @@ class SearchProgressDialog(QDialog):
             inputs = sum(run.usage.get("input_tokens") or 0 for run in batch.runs)
             outputs = sum(run.usage.get("output_tokens") or 0 for run in batch.runs)
             hits = sum(run.cache_hit for run in batch.runs)
-            self.summary.setText(f"เสร็จ {completed}/{self.chunk_count} ช่วง · ผิดพลาด {failed} · API calls: {calls} · Input tokens: {inputs:,} · Output tokens: {outputs:,} · Cache hits: {hits}")
+            self.summary.setText(
+                f"เสร็จ {completed}/{self.chunk_count} ช่วง · ผิดพลาด {failed} · API calls: {calls} · "
+                f"Input tokens: {inputs:,} · Output tokens: {outputs:,} · Cache hits: {hits}"
+            )
             for row, run in enumerate(batch.runs):
                 self.table.item(row, 2).setText(str(run.request_count))
                 self.table.item(row, 3).setText(f"{run.usage['input_tokens']:,}" if run.usage.get("input_tokens") is not None else "—")

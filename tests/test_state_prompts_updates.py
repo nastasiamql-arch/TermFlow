@@ -71,10 +71,13 @@ def test_builtin_prompts_match_saved_text():
 
 def test_builtin_prompt_bytes_match_frozen_sha256():
     import hashlib
+
     from termflow.storage.paths import PROMPTS
 
-    assert hashlib.sha256((PROMPTS / "search" / "vocab_extractor_v3.md").read_bytes()).hexdigest() == "0349ca067df731f79a97e78d3936a2364ac5edc22a05199a488918dd0088395d"
-    assert hashlib.sha256((PROMPTS / "polish" / "polish_glossary.md").read_bytes()).hexdigest() == "2f321ce4c4dd5eba771b8cda8b828e2fbbd83558f1abd82e34cab29759af156b"
+    search_sha = hashlib.sha256((PROMPTS / "search" / "vocab_extractor_v3.md").read_bytes()).hexdigest()
+    polish_sha = hashlib.sha256((PROMPTS / "polish" / "polish_glossary.md").read_bytes()).hexdigest()
+    assert search_sha == "0349ca067df731f79a97e78d3936a2364ac5edc22a05199a488918dd0088395d"
+    assert polish_sha == "2f321ce4c4dd5eba771b8cda8b828e2fbbd83558f1abd82e34cab29759af156b"
 
 
 def test_frozen_prompt_directory_uses_pyinstaller_bundle(tmp_path, monkeypatch):

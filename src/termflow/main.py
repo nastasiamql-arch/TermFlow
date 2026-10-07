@@ -42,17 +42,16 @@ from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.local_repair import repair_formatting
-from termflow.core.result_cache import ResultCache, cache_key
 from termflow.core.logging_config import configure_logging
 from termflow.core.prompts import list_prompts
 from termflow.core.request_planner import estimate_tokens, plan_search
+from termflow.core.result_cache import ResultCache, cache_key
 from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
 from termflow.core.search_chunks import SourceChunk, split_source
 from termflow.core.search_coordinator import SearchCoordinator
 from termflow.core.search_export import format_step_a_result
 from termflow.core.state_machine import State
 from termflow.core.workflow import Workflow
-from termflow.validators.step_b_validator import validate_step_b
 from termflow.storage.credentials import delete, get, store
 from termflow.storage.paths import APPDATA, LOCAL
 from termflow.storage.profiles import (
@@ -74,6 +73,7 @@ from termflow.updater.downloader import download
 from termflow.updater.github_releases import latest_release
 from termflow.updater.installer import launch_installer
 from termflow.updater.version_check import is_newer
+from termflow.validators.step_b_validator import validate_step_b
 from termflow.version import __version__
 
 
@@ -894,11 +894,23 @@ class MainWindow(QMainWindow):
         self._selected_prompt = selected_prompt
         self._request = request
         self._request_cache_key = cache_key(
-            workflow=f"step-{step}", provider=self.settings.provider, base_url=self.settings.base_url,
-            model=selected_model, prompt=prompt, source=request.source, vocab=request.vocab,
-            user_input=request.user_input, validator_version=f"step-{step}-v1",
+            workflow=f"step-{step}",
+            provider=self.settings.provider,
+            base_url=self.settings.base_url,
+            model=selected_model,
+            prompt=prompt,
+            source=request.source,
+            vocab=request.vocab,
+            user_input=request.user_input,
+            validator_version=f"step-{step}-v1",
         )
-        validator = (lambda value: validate_step_b(value, [line.split("\t") for line in self._b_input().splitlines()])) if step == "B" else None
+        if step == "B":
+            expected_rows = [line.split("\t") for line in self._b_input().splitlines()]
+
+            def validator(value):
+                return validate_step_b(value, expected_rows)
+        else:
+            validator = None
         if self.settings.reuse_results and validator is not None:
             cached = ResultCache().get(self._request_cache_key, validator)
             if cached is not None:
@@ -1313,7 +1325,11 @@ class MainWindow(QMainWindow):
             return
         self.save_current_snapshot(original_raw, parsed, valid)
         if valid and self.settings.reuse_results and getattr(self, "_request_cache_key", None) and self._step == "B":
-            validator = lambda value: validate_step_b(value, [line.split("\t") for line in self._b_input().splitlines()])
+            expected_rows = [line.split("\t") for line in self._b_input().splitlines()]
+
+            def validator(value):
+                return validate_step_b(value, expected_rows)
+
             secret = get(self.settings.provider) or ""
             cache_result = repaired_response or raw
             if not secret or secret not in cache_result:

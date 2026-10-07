@@ -7,9 +7,9 @@ import httpx
 
 from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
-from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch
-from termflow.core.result_cache import ResultCache, cache_key
 from termflow.core.local_repair import repair_formatting
+from termflow.core.result_cache import ResultCache, cache_key
+from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch
 from termflow.validators.step_a_validator import validate_step_a
 
 ProgressCallback = Callable[[int, str, str, int, int], None]

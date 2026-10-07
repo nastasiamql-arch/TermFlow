@@ -159,7 +159,10 @@ def test_read_timeout_fails_once_without_split_or_automatic_retry(monkeypatch):
         api_key="secret",
         provider_factory=lambda *_: TimeoutProvider(requests, lock),
     )
-    monkeypatch.setattr(SearchCoordinator, "_split_source", staticmethod(lambda *_: (_ for _ in ()).throw(AssertionError("must not split"))))
+    def unexpected_split(*_args):
+        raise AssertionError("a ReadTimeout must not split automatically")
+
+    monkeypatch.setattr(SearchCoordinator, "_split_source", staticmethod(unexpected_split))
 
     coordinator.run()
 

@@ -1,5 +1,5 @@
-from termflow.core.local_repair import repair_formatting
 from termflow.core.errors import ValidationError
+from termflow.core.local_repair import repair_formatting
 from termflow.validators.step_a_validator import NEW, UPDATE, validate_step_a
 from termflow.validators.step_b_validator import COPY_READY, validate_step_b
 
