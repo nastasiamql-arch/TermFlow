@@ -1,7 +1,7 @@
 from threading import Event
 from time import monotonic
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from termflow.core.search_batch import SearchBatch
