@@ -269,6 +269,8 @@ class SettingsDialog(QDialog):
         self.test.clicked.connect(self.test_connection)
         self.load_models = QPushButton("Load Models")
         self.load_models.clicked.connect(self.models)
+        self.manage_prompts = QPushButton("Prompt Manager")
+        self.manage_prompts.clicked.connect(parent.prompt_manager)
         self.delete_key = QPushButton("Delete API Key")
         self.delete_key.clicked.connect(self.delete_api_key)
         self.updates = QPushButton("Check for Updates")
@@ -286,6 +288,7 @@ class SettingsDialog(QDialog):
         advanced_form.addRow("SOURCE chunks (advanced)", self.search_chunks)
         advanced_form.addRow("", QLabel("การ retry อาจสร้างค่า API เพิ่ม · 1–20 chunks"))
         advanced_form.addRow("", self.reuse_results)
+        advanced_form.addRow("", self.manage_prompts)
         form.addRow(advanced)
         form.addRow("Theme", self.theme)
         form.addRow("ขนาดตัวอักษร", self.font_size)
@@ -488,23 +491,22 @@ class MainWindow(QMainWindow):
             ("Open SOURCE", self.open_source),
             ("Open VOCAB", self.open_vocab),
             ("Settings", self.open_settings),
-            ("Prompt Manager", self.prompt_manager),
             ("History", self.history_dialog),
-            ("Check for Updates", self.check_updates),
         ]:
             b = QPushButton(label)
             b.clicked.connect(fn)
             head.addWidget(b)
         layout.addLayout(head)
+        layout.addWidget(QLabel("1 เตรียม SOURCE / VOCAB  →  2 หาศัพท์  →  3 ตรวจและเกลา  →  Copy / Save"))
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         self.source_view = QPlainTextEdit()
         self.source_view.setPlaceholderText("Open SOURCE file or paste text here")
-        self.tabs.addTab(self.source_view, "1. หาศัพท์")
+        self.tabs.addTab(self.source_view, "1. เตรียม SOURCE")
         self.vocab_view = QPlainTextEdit()
         self.vocab_view.setReadOnly(True)
         self.vocab_view.setPlaceholderText("VOCAB is read only 🔒")
-        self.tabs.addTab(self.vocab_view, "VOCAB · READ ONLY 🔒")
+        self.tabs.addTab(self.vocab_view, "1. VOCAB · READ ONLY 🔒")
         review = QWidget()
         rv = QVBoxLayout(review)
         self.new_table = CopyableTableWidget()
@@ -523,8 +525,8 @@ class MainWindow(QMainWindow):
         for label, fn in [
             ("Select All", lambda: self.select_rows(True)),
             ("Select None", lambda: self.select_rows(False)),
-            ("Run Search", self.run_search),
-            ("Send Selected NEW to Polish", self.run_polish),
+            ("หาศัพท์", self.run_search),
+            ("เกลารายการที่เลือก", self.run_polish),
             ("Copy NEW", lambda: self.copy_table(self.new_table)),
             ("Copy UPDATE", lambda: self.copy_table(self.update_table)),
             ("Copy All", self.copy_all_a),
@@ -533,7 +535,7 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(fn)
             row.addWidget(b)
-            if label in {"Run Search", "Send Selected NEW to Polish", "บันทึกผลรวม"}:
+            if label in {"หาศัพท์", "เกลารายการที่เลือก", "บันทึกผลรวม"}:
                 self.search_action_buttons[label] = b
         rv.addLayout(row)
         rv.addWidget(QLabel("Final Result · CN / TH / SEX / NOTE"))
@@ -548,7 +550,7 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             copy.addWidget(b)
         rv.addLayout(copy)
-        self.tabs.addTab(review, "2–4. ตรวจผล / เกลา / Copy")
+        self.tabs.addTab(review, "2–3. ตรวจ / เกลา / Copy / Save")
         self.setCentralWidget(root)
         self.apply_theme()
         self.results_stale = False
@@ -745,7 +747,7 @@ class MainWindow(QMainWindow):
     def _set_results_stale(self, stale):
         self.results_stale = stale
         self.stale_label.setVisible(stale)
-        polish_button = self.search_action_buttons.get("Send Selected NEW to Polish")
+        polish_button = self.search_action_buttons.get("เกลารายการที่เลือก")
         if polish_button:
             polish_button.setEnabled(not stale)
 
@@ -776,8 +778,8 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Welcome to TermFlow")
         layout = QVBoxLayout(dialog)
         instructions = (
-            "Welcome to TermFlow\n\n1. ตั้งค่า AI Provider\n2. เลือก/เปิด VOCAB\n3. เปิด SOURCE\n"
-            "4. Run Search\n5. Review\n6. Polish\n7. Copy"
+            "Welcome to TermFlow\n\n1. ตั้งค่า AI Provider และเลือก VOCAB / SOURCE\n"
+            "2. หาศัพท์ แล้วตรวจ NEW / UPDATE\n3. เลือกรายการเพื่อเกลา จากนั้น Copy หรือ Save"
         )
         layout.addWidget(QLabel(instructions))
         hide = QCheckBox("Do not show again")
