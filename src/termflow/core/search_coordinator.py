@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event, Lock
+from time import monotonic
 from typing import Callable
 
 import httpx
@@ -7,6 +8,7 @@ import httpx
 from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch
+from termflow.core.result_cache import ResultCache, cache_key
 from termflow.validators.step_a_validator import validate_step_a
 
 ProgressCallback = Callable[[int, str, str, int, int], None]
@@ -36,6 +38,7 @@ class SearchCoordinator:
         self.cancelled = Event()
         self._providers = {}
         self._providers_lock = Lock()
+        self.result_cache = ResultCache()
 
     def cancel(self) -> None:
         self.cancelled.set()
@@ -63,7 +66,11 @@ class SearchCoordinator:
             with self._providers_lock:
                 self._providers[run.chunk.index] = provider
             try:
-                raw = self._generate_part(provider, run, run.chunk.text, depth=0, suffix="")
+                started = monotonic()
+                try:
+                    raw = self._generate_part(provider, run, run.chunk.text, depth=0, suffix="")
+                finally:
+                    run.duration_seconds += monotonic() - started
                 if self.cancelled.is_set():
                     return
                 self.batch.mark_validating(run.chunk.index)
@@ -78,6 +85,9 @@ class SearchCoordinator:
             self._notify(run, "" if accepted else run.error)
         except Exception as exc:
             if not self.cancelled.is_set():
+                if "provider" in locals():
+                    run.request_count = max(run.request_count, getattr(provider, "request_count", 0))
+                    run.usage = {"raw": getattr(provider, "last_usage", {}), **getattr(provider, "normalized_usage", lambda: {})()}
                 self.batch.fail_chunk(run.chunk.index, str(exc))
                 self._notify(run, run.error)
         finally:
@@ -98,36 +108,30 @@ class SearchCoordinator:
                 f"{suffix}"
             ),
         )
+        key = cache_key(
+            workflow="search-step-a", provider=self.config.provider, base_url=self.config.base_url,
+            model=self.config.model, prompt=request.prompt, source=request.source, vocab=request.vocab,
+            user_input=request.user_input, validator_version="step-a-v1",
+        )
+        if getattr(self.config, "reuse_results", True):
+            cached = self.result_cache.get(key, validate_step_a)
+            if cached is not None:
+                run.cache_hit = True
+                return cached
         try:
             raw = provider.generate(request)
+            run.request_count += getattr(provider, "request_count", 1)
+            run.usage = {"raw": getattr(provider, "last_usage", {}), **getattr(provider, "normalized_usage", lambda: {})()}
             validate_step_a(raw)
+            if getattr(self.config, "reuse_results", True):
+                self.result_cache.put(key, raw, validate_step_a)
             return raw
         except httpx.ReadTimeout as exc:
-            if depth >= 2:
-                raise
-            pieces = self._split_source(source)
-            run.split_depth = max(run.split_depth, depth + 1)
-            self._notify(run, f"หมดเวลารอ · แบ่งเฉพาะช่วงนี้เป็น {len(pieces)} ส่วนย่อย")
-            responses: list[str] = []
-            for sub_index, piece in enumerate(pieces, 1):
-                if self.cancelled.is_set():
-                    raise InterruptedError("Request cancelled")
-                try:
-                    responses.append(
-                        self._generate_part(
-                            provider,
-                            run,
-                            piece,
-                            depth=depth + 1,
-                            suffix=(
-                                f" This is subpart {sub_index} of {len(pieces)} for SOURCE part "
-                                f"{run.chunk.index} of {len(self.batch.runs)}."
-                            ),
-                        )
-                    )
-                except _SplitCompleted as nested:
-                    responses.extend(nested.responses)
-            raise _SplitCompleted(responses) from exc
+            run.request_count += max(0, getattr(provider, "request_count", 1))
+            raise httpx.ReadTimeout(
+                f"AI response timeout after {self.config.timeout} seconds. No automatic retry was sent.",
+                request=exc.request,
+            ) from exc
 
     @staticmethod
     def _split_source(source: str) -> tuple[str, str]:

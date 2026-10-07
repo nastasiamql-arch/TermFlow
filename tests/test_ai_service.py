@@ -83,6 +83,56 @@ def test_provider_does_not_retry_non_retriable_status(monkeypatch):
     assert len(calls) == 1
 
 
+def test_new_provider_config_has_long_response_timeout_and_no_retries():
+    from termflow.ai.service import ProviderConfig
+
+    config = ProviderConfig()
+    assert config.timeout == 900
+    assert config.retries == 0
+
+
+def test_usage_is_preserved_and_normalized_when_available(monkeypatch):
+    observed = []
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17,
+                          "prompt_tokens_details": {"cached_tokens": 3}},
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.timeout = kwargs["timeout"]
+            observed.append(self.timeout)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("termflow.ai.service.httpx.Client", Client)
+    provider = HTTPProvider("secret", "model")
+    assert provider.generate(GenerateRequest(prompt="p")) == "ok"
+    assert provider.last_usage["prompt_tokens"] == 12
+    assert provider.normalized_usage() == {
+        "input_tokens": 12, "output_tokens": 5, "cached_input_tokens": 3, "total_tokens": 17
+    }
+    assert provider.finish_reason == "stop"
+    assert provider.request_count == 1
+    assert observed[0].read == 900
+    assert observed[0].connect == 30
+    assert observed[0].write == 60
+    assert observed[0].pool == 30
+
+
 def test_provider_does_not_repeat_read_timeout_before_search_can_split(monkeypatch):
     provider = HTTPProvider("secret", "model", retries=2)
     calls = []

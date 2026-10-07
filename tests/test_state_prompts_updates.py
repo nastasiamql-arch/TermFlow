@@ -20,11 +20,21 @@ def test_release_version_comparison():
     assert not is_newer("not-a-version", "1.2.0")
 
 
-def test_search_chunk_setting_defaults_to_three_and_loads_old_settings():
+def test_new_settings_use_economical_request_defaults():
     from termflow.storage.settings import Settings
 
-    assert Settings().search_chunks == 3
-    assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 3
+    settings = Settings()
+    assert settings.search_chunks == 1
+    assert settings.retries == 0
+    assert settings.timeout == 900
+    assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 1
+
+
+def test_existing_settings_values_are_preserved():
+    from termflow.storage.settings import Settings
+
+    old = Settings.model_validate({"search_chunks": 4, "retries": 2, "timeout": 600})
+    assert (old.search_chunks, old.retries, old.timeout) == (4, 2, 600)
 
 
 def test_builtin_prompts_match_saved_text():
@@ -36,6 +46,14 @@ def test_builtin_prompts_match_saved_text():
     b = (PROMPTS / "polish" / "polish_glossary.md").read_bytes().decode("utf-8-sig")
     assert values["builtin-search"]["content"] == a
     assert values["builtin-polish"]["content"] == b
+
+
+def test_builtin_prompt_bytes_match_frozen_sha256():
+    import hashlib
+    from termflow.storage.paths import PROMPTS
+
+    assert hashlib.sha256((PROMPTS / "search" / "vocab_extractor_v3.md").read_bytes()).hexdigest() == "0349ca067df731f79a97e78d3936a2364ac5edc22a05199a488918dd0088395d"
+    assert hashlib.sha256((PROMPTS / "polish" / "polish_glossary.md").read_bytes()).hexdigest() == "2f321ce4c4dd5eba771b8cda8b828e2fbbd83558f1abd82e34cab29759af156b"
 
 
 def test_frozen_prompt_directory_uses_pyinstaller_bundle(tmp_path, monkeypatch):

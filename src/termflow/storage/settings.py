@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from termflow.storage.paths import APPDATA
 
@@ -13,9 +13,12 @@ class Settings(BaseModel):
     model: str = ""
     selected_search_prompt: str = "builtin-search"
     selected_polish_prompt: str = "builtin-polish"
-    timeout: int = 90
-    retries: int = 2
-    search_chunks: int = 3
+    timeout: int = Field(default=900, ge=30, le=1800)
+    retries: int = Field(default=0, ge=0, le=10)
+    search_chunks: int = Field(default=1, ge=1, le=20)
+    search_model: str = ""
+    polish_model: str = ""
+    reuse_results: bool = True
     font_size: int = 12
     check_updates_on_startup: bool = True
     show_welcome: bool = True

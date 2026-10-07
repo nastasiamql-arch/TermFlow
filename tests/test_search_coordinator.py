@@ -72,7 +72,7 @@ def test_sends_ten_distinct_parts_in_parallel_with_exact_prompt_and_vocab():
         batch,
         prompt="EXACT PROMPT A\nKeep all original instructions.",
         vocab="READ ONLY VOCAB",
-        config=ProviderConfig(provider="compatible", model="test"),
+        config=ProviderConfig(provider="compatible", model="test", reuse_results=False),
         api_key="test-secret",
         provider_factory=lambda *_: ConcurrencyProvider(requests, lock),
     )
@@ -95,7 +95,7 @@ def test_three_chunk_search_uses_dynamic_part_count():
         batch,
         prompt="exact prompt",
         vocab="read-only vocab",
-        config=ProviderConfig(provider="compatible", model="test"),
+        config=ProviderConfig(provider="compatible", model="test", reuse_results=False),
         api_key="test-secret",
         provider_factory=lambda *_: RecordingProvider(requests, lock),
     ).run()
@@ -118,7 +118,7 @@ def test_failures_are_isolated_and_retry_only_failed_chunk():
         batch,
         prompt="prompt",
         vocab="vocab",
-        config=ProviderConfig(model="test"),
+        config=ProviderConfig(model="test", reuse_results=False),
         api_key="secret",
         provider_factory=factory,
     ).run()
@@ -129,7 +129,7 @@ def test_failures_are_isolated_and_retry_only_failed_chunk():
         batch,
         prompt="prompt",
         vocab="vocab",
-        config=ProviderConfig(model="test"),
+        config=ProviderConfig(model="test", reuse_results=False),
         api_key="secret",
         provider_factory=lambda *_: RecordingProvider(requests, lock),
     ).run()
@@ -138,45 +138,37 @@ def test_failures_are_isolated_and_retry_only_failed_chunk():
     assert sum("part 3 of 10" in request.user_input for request in requests) == 2
 
 
-def test_read_timeout_splits_only_that_source_chunk_and_validates_each_subpart():
+def test_read_timeout_fails_once_without_split_or_automatic_retry(monkeypatch):
     batch = make_batch()
     parent_source = batch.chunks[2].text
     requests = []
     lock = Lock()
-    child_index = 0
-
-    class TimeoutOnceProvider(RecordingProvider):
+    class TimeoutProvider(RecordingProvider):
         def generate(self, request):
-            nonlocal child_index
             with lock:
                 requests.append(request)
-                is_parent = request.source == parent_source
-                if "part 3 of 10" in request.user_input and is_parent:
-                    raise httpx.ReadTimeout("The read operation timed out")
-                if "part 3 of 10" in request.user_input:
-                    child_index += 1
-                    return valid_response(f"林雪{child_index}")
+            if request.source == parent_source:
+                raise httpx.ReadTimeout("The read operation timed out")
             return valid_response()
 
     coordinator = SearchCoordinator(
         batch,
         prompt="exact Prompt A",
         vocab="same read-only vocab",
-        config=ProviderConfig(provider="compatible", model="test", retries=2),
+        config=ProviderConfig(provider="compatible", model="test", retries=2, reuse_results=False),
         api_key="secret",
-        provider_factory=lambda *_: TimeoutOnceProvider([], Lock()),
+        provider_factory=lambda *_: TimeoutProvider(requests, lock),
     )
+    monkeypatch.setattr(SearchCoordinator, "_split_source", staticmethod(lambda *_: (_ for _ in ()).throw(AssertionError("must not split"))))
 
     coordinator.run()
 
     run = batch.runs[2]
-    assert batch.all_complete
-    assert run.split_depth == 1
-    assert run.new_rows == [
-        ["林雪1", "ไทย", "-", "note"],
-        ["林雪2", "ไทย", "-", "note"],
-    ]
-    assert len(run.attempts) == 2
+    assert run.status == ChunkStatus.FAILED
+    assert run.request_count == 1
+    assert len(requests) == 10
+    assert run.split_depth == 0
+    assert "No automatic retry was sent" in run.error
     assert all(request.prompt == "exact Prompt A" for request in requests)
     assert all(request.vocab == "same read-only vocab" for request in requests)
 
@@ -188,7 +180,7 @@ def test_notifies_progress_and_skips_empty_core_ranges():
         batch,
         prompt="p",
         vocab="",
-        config=ProviderConfig(model="test"),
+        config=ProviderConfig(model="test", reuse_results=False),
         api_key="secret",
         on_progress=lambda *event: events.append(event),
         provider_factory=lambda *_: RecordingProvider([], Lock()),
@@ -227,7 +219,7 @@ def test_cancel_fans_out_to_all_active_providers_and_never_completes_batch():
         batch,
         prompt="p",
         vocab="v",
-        config=ProviderConfig(model="test"),
+        config=ProviderConfig(model="test", reuse_results=False),
         api_key="secret",
         provider_factory=lambda *_: BlockingProvider(),
     )
