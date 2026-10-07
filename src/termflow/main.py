@@ -1322,7 +1322,20 @@ class MainWindow(QMainWindow):
 
     def save_current_snapshot(self, raw, parsed, valid):
         input_text = self._request.user_input + self._request.source + self._request.vocab
-        save_snapshot(
+        secret = get(self.settings.provider) or ""
+
+        def redact(value):
+            if isinstance(value, str):
+                return value.replace(secret, "[REDACTED]") if secret else value
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, tuple):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                return {key: redact(item) for key, item in value.items()}
+            return value
+
+        save_snapshot(redact(
             {
                 "source_filename": Path(self.source_path).name if self.source_path else "",
                 "vocab_filename": Path(self.vocab_path).name if self.vocab_path else "",
@@ -1332,7 +1345,7 @@ class MainWindow(QMainWindow):
                 "exact_prompt_text": self._prompt,
                 "prompt_sha256": hashlib.sha256(self._prompt.encode("utf-8")).hexdigest(),
                 "provider": self.settings.provider,
-                "model": self.settings.model,
+                "model": getattr(self._provider, "model", self.settings.model),
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "raw_response": raw,
                 "parsed_result": parsed,
@@ -1344,7 +1357,7 @@ class MainWindow(QMainWindow):
                 "timeout_seconds": self.settings.timeout,
                 "repaired_response": getattr(self, "_local_repair_response", ""),
             }
-        )
+        ))
 
     def on_error(self, msg):
         self.cancel_button.setVisible(False)
