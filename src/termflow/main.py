@@ -288,7 +288,7 @@ class SettingsDialog(QDialog):
         advanced_form.addRow("Polish model (ว่าง = Default)", self.polish_model)
         advanced_form.addRow("SOURCE chunks (advanced)", self.search_chunks)
         advanced_form.addRow("Search context window (tokens)", self.context_window)
-        advanced_form.addRow("", QLabel("Input สูงสุด 1,000,000 tokens · output สูงสุด 8,192 tokens ตามค่า API"))
+        advanced_form.addRow("", QLabel("Input สูงสุด 1,000,000 tokens · Output ใช้ค่าเดิมที่กำหนดโดย Provider/API"))
         advanced_form.addRow("", QLabel("การ retry อาจสร้างค่า API เพิ่ม · 1–20 chunks"))
         advanced_form.addRow("", self.reuse_results)
         advanced_form.addRow("", self.manage_prompts)
