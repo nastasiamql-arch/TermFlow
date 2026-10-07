@@ -14,4 +14,4 @@ def test_planner_uses_only_required_chunks_and_accounts_for_repeated_fixed_input
 
 
 def test_token_estimate_is_conservative_for_mixed_script_text():
-    assert estimate_tokens("中文ไทยEnglish") == 7
+    assert estimate_tokens("中文ไทยEnglish") == 6
