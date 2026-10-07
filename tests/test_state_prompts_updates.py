@@ -27,7 +27,9 @@ def test_new_settings_use_economical_request_defaults():
     assert settings.search_chunks == 1
     assert settings.retries == 0
     assert settings.timeout == 900
+    assert settings.context_window == 1_000_000
     assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 1
+    assert Settings.model_validate({"provider": "openai", "model": "example"}).context_window == 1_000_000
 
 
 def test_existing_settings_values_are_preserved():
