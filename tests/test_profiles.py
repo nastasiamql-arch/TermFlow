@@ -49,6 +49,13 @@ def test_deleting_active_profile_selects_remaining_profile(tmp_path, monkeypatch
     assert saved.active_profile_id == second.id
 
 
+def test_new_profile_defaults_to_one_search_chunk(tmp_path, monkeypatch):
+    import termflow.storage.profiles as profiles
+
+    monkeypatch.setattr(profiles, "APPDATA", tmp_path)
+    assert profiles.create_profile("new").search_chunks == 1
+
+
 def test_file_snapshot_reads_utf8_bom_and_detects_changed_content(tmp_path):
     source = tmp_path / "chapter.txt"
     source.write_text("第一章\nสวัสดี", encoding="utf-8-sig")

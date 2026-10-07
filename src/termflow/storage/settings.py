@@ -1,7 +1,8 @@
+import json
 import os
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from termflow.storage.paths import APPDATA
 
@@ -13,14 +14,24 @@ class Settings(BaseModel):
     model: str = ""
     selected_search_prompt: str = "builtin-search"
     selected_polish_prompt: str = "builtin-polish"
-    timeout: int = 90
-    retries: int = 2
-    search_chunks: int = 3
+    timeout: int = Field(default=900, ge=30, le=1800)
+    retries: int = Field(default=0, ge=0, le=10)
+    search_chunks: int = Field(default=1, ge=1, le=20)
+    search_model: str = ""
+    polish_model: str = ""
+    reuse_results: bool = True
     font_size: int = 12
     check_updates_on_startup: bool = True
     show_welcome: bool = True
     theme: str = "System"
     debug: bool = False
+
+    def model_for_step(self, step: str) -> str:
+        if step == "A":
+            return self.search_model or self.model
+        if step == "B":
+            return self.polish_model or self.model
+        raise ValueError(f"Unknown workflow step: {step}")
 
 
 def settings_path() -> Path:
@@ -29,12 +40,17 @@ def settings_path() -> Path:
 
 def load_settings() -> Settings:
     try:
-        settings = Settings.model_validate_json(settings_path().read_text("utf-8"))
+        values = json.loads(settings_path().read_text("utf-8"))
+        # Older releases allowed shorter response timeouts. Clamp only that field
+        # to the new supported range while retaining all unrelated preferences.
+        if isinstance(values, dict) and "timeout" in values:
+            values["timeout"] = min(1800, max(30, int(values["timeout"])))
+        settings = Settings.model_validate(values)
         # 11 pt was the previous default and rendered too small on common displays.
         if settings.font_size == 11:
             settings.font_size = 12
         return settings
-    except (OSError, ValueError):
+    except (OSError, TypeError, ValueError):
         return Settings()
 
 

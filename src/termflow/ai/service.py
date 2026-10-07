@@ -8,8 +8,9 @@ class ProviderConfig(BaseModel):
     provider: str = "openai"
     model: str = ""
     base_url: str = ""
-    timeout: int = Field(default=90, ge=5, le=600)
-    retries: int = Field(default=2, ge=0, le=10)
+    timeout: int = Field(default=900, ge=30, le=1800)
+    retries: int = Field(default=0, ge=0, le=10)
+    reuse_results: bool = True
 
 
 class HTTPProvider(AIProvider):
@@ -32,9 +33,14 @@ class HTTPProvider(AIProvider):
         return {"Authorization": f"Bearer {self.api_key}", **h}
 
     def generate(self, request: GenerateRequest) -> str:
+        self.last_usage = {}
+        self.last_request_meta = {"provider": self.kind, "model": self.model}
+        self.finish_reason = ""
+        self.request_count = 0
         for attempt in range(self.retries + 1):
             self.check_cancelled()
             try:
+                self.request_count += 1
                 return self._generate_once(request)
             except InterruptedError:
                 raise
@@ -43,10 +49,9 @@ class HTTPProvider(AIProvider):
                     raise
                 self._wait_before_retry(attempt)
             except httpx.ReadTimeout:
-                # Replaying a large SOURCE payload rarely fixes a slow response.
-                # Let the workflow split this one part and retry smaller inputs.
+                # Generation may be billable even when the client times out. Never replay it.
                 raise
-            except (httpx.TimeoutException, httpx.ConnectError):
+            except (httpx.ConnectTimeout, httpx.ConnectError):
                 if attempt >= self.retries:
                     raise
                 self._wait_before_retry(attempt)
@@ -78,7 +83,13 @@ class HTTPProvider(AIProvider):
             payload = {"systemInstruction": {"parts": [{"text": request.prompt}]}, "contents": [{"parts": [{"text": user}]}]}
         else:
             url = self.endpoint()
-        with httpx.Client(timeout=self.timeout) as client:
+        timeout = httpx.Timeout(
+            connect=min(float(self.timeout), 30.0),
+            write=60.0,
+            read=float(self.timeout),
+            pool=30.0,
+        )
+        with httpx.Client(timeout=timeout) as client:
             self._active_client = client
             headers = self.headers() if self.kind != "gemini" else {"x-goog-api-key": self.api_key}
             try:
@@ -91,6 +102,9 @@ class HTTPProvider(AIProvider):
                 self._active_client = None
             response.raise_for_status()
             data = response.json()
+        self.last_usage = data.get("usageMetadata", {}) if self.kind == "gemini" else data.get("usage", {})
+        self.last_request_meta = {"provider": self.kind, "model": self.model}
+        self.finish_reason = self._finish_reason(data)
         try:
             if self.kind == "anthropic":
                 return "".join(x["text"] for x in data["content"] if x.get("type") == "text")
@@ -99,6 +113,34 @@ class HTTPProvider(AIProvider):
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError("Provider returned an unsupported response format") from exc
+
+    def normalized_usage(self) -> dict[str, int | None]:
+        usage = self.last_usage or {}
+        if self.kind == "gemini":
+            source = {
+                "input_tokens": usage.get("promptTokenCount"),
+                "output_tokens": usage.get("candidatesTokenCount"),
+                "cached_input_tokens": usage.get("cachedContentTokenCount"),
+                "total_tokens": usage.get("totalTokenCount"),
+            }
+        else:
+            source = {
+                "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens")),
+                "output_tokens": usage.get("output_tokens", usage.get("completion_tokens")),
+                "cached_input_tokens": usage.get("cached_input_tokens", (usage.get("prompt_tokens_details") or {}).get("cached_tokens")),
+                "total_tokens": usage.get("total_tokens"),
+            }
+        return {key: value if isinstance(value, int) else None for key, value in source.items()}
+
+    def _finish_reason(self, data: dict) -> str:
+        try:
+            if self.kind == "gemini":
+                return str(data["candidates"][0].get("finishReason", ""))
+            if self.kind == "anthropic":
+                return str(data.get("stop_reason", ""))
+            return str(data["choices"][0].get("finish_reason", ""))
+        except (KeyError, IndexError, TypeError):
+            return ""
 
     def test_connection(self) -> bool:
         self.generate(GenerateRequest(prompt="Reply with OK only.", user_input="OK"))

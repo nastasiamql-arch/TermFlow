@@ -13,7 +13,7 @@ class NovelProfile(BaseModel):
     name: str
     source_path: str = ""
     vocab_path: str = ""
-    search_chunks: int = 3
+    search_chunks: int = 1
     selected_search_prompt: str = "builtin-search"
     selected_polish_prompt: str = "builtin-polish"
 

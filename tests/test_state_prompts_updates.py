@@ -20,11 +20,42 @@ def test_release_version_comparison():
     assert not is_newer("not-a-version", "1.2.0")
 
 
-def test_search_chunk_setting_defaults_to_three_and_loads_old_settings():
+def test_new_settings_use_economical_request_defaults():
     from termflow.storage.settings import Settings
 
-    assert Settings().search_chunks == 3
-    assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 3
+    settings = Settings()
+    assert settings.search_chunks == 1
+    assert settings.retries == 0
+    assert settings.timeout == 900
+    assert Settings.model_validate({"provider": "openai", "model": "example"}).search_chunks == 1
+
+
+def test_existing_settings_values_are_preserved():
+    from termflow.storage.settings import Settings
+
+    old = Settings.model_validate({"search_chunks": 4, "retries": 2, "timeout": 600})
+    assert (old.search_chunks, old.retries, old.timeout) == (4, 2, 600)
+
+
+def test_search_and_polish_can_resolve_different_models():
+    from termflow.storage.settings import Settings
+
+    settings = Settings(model="default-model", search_model="expensive-search", polish_model="cheap-polish")
+    assert settings.model_for_step("A") == "expensive-search"
+    assert settings.model_for_step("B") == "cheap-polish"
+    assert Settings(model="fallback").model_for_step("A") == "fallback"
+    assert Settings(model="fallback").model_for_step("B") == "fallback"
+
+
+def test_old_short_timeout_is_clamped_without_losing_other_settings(tmp_path, monkeypatch):
+    import termflow.storage.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "APPDATA", tmp_path)
+    settings_module.settings_path().write_text('{"timeout": 10, "search_chunks": 4, "retries": 2}', encoding="utf-8")
+    loaded = settings_module.load_settings()
+    assert loaded.timeout == 30
+    assert loaded.search_chunks == 4
+    assert loaded.retries == 2
 
 
 def test_builtin_prompts_match_saved_text():
@@ -36,6 +67,17 @@ def test_builtin_prompts_match_saved_text():
     b = (PROMPTS / "polish" / "polish_glossary.md").read_bytes().decode("utf-8-sig")
     assert values["builtin-search"]["content"] == a
     assert values["builtin-polish"]["content"] == b
+
+
+def test_builtin_prompt_bytes_match_frozen_sha256():
+    import hashlib
+
+    from termflow.storage.paths import PROMPTS
+
+    search_sha = hashlib.sha256((PROMPTS / "search" / "vocab_extractor_v3.md").read_bytes()).hexdigest()
+    polish_sha = hashlib.sha256((PROMPTS / "polish" / "polish_glossary.md").read_bytes()).hexdigest()
+    assert search_sha == "0349ca067df731f79a97e78d3936a2364ac5edc22a05199a488918dd0088395d"
+    assert polish_sha == "2f321ce4c4dd5eba771b8cda8b828e2fbbd83558f1abd82e34cab29759af156b"
 
 
 def test_frozen_prompt_directory_uses_pyinstaller_bundle(tmp_path, monkeypatch):

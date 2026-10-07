@@ -21,11 +21,18 @@ class ChunkRun:
     status: ChunkStatus = ChunkStatus.PENDING
     retry_count: int = 0
     raw_response: str = ""
+    original_response: str = ""
+    repaired_response: str = ""
+    origin: str = "api"
     new_rows: list[list[str]] = field(default_factory=list)
     update_rows: list[list[str]] = field(default_factory=list)
     error: str = ""
     attempts: list[dict] = field(default_factory=list)
     split_depth: int = 0
+    usage: dict = field(default_factory=dict)
+    request_count: int = 0
+    cache_hit: bool = False
+    duration_seconds: float = 0.0
 
 
 @dataclass(frozen=True)

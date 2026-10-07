@@ -3,8 +3,10 @@ import os
 import shutil
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
+from time import monotonic
 
 import httpx
 from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QThread, QTimer, QUrl, Signal
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -38,10 +41,14 @@ from PySide6.QtWidgets import (
 from termflow.ai.base import GenerateRequest
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
+from termflow.core.local_repair import repair_formatting
 from termflow.core.logging_config import configure_logging
 from termflow.core.prompts import list_prompts
-from termflow.core.search_batch import ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
-from termflow.core.search_chunks import split_source
+from termflow.core.request_planner import estimate_tokens, plan_search
+from termflow.core.result_cache import ResultCache, cache_key
+from termflow.core.search_batch import ChunkRun, ChunkStatus, SearchBatch, aggregate_batch, apply_conflict_choices
+from termflow.core.search_chunks import SourceChunk, split_source
+from termflow.core.search_coordinator import SearchCoordinator
 from termflow.core.search_export import format_step_a_result
 from termflow.core.state_machine import State
 from termflow.core.workflow import Workflow
@@ -66,6 +73,7 @@ from termflow.updater.downloader import download
 from termflow.updater.github_releases import latest_release
 from termflow.updater.installer import launch_installer
 from termflow.updater.version_check import is_newer
+from termflow.validators.step_b_validator import validate_step_b
 from termflow.version import __version__
 
 
@@ -223,8 +231,12 @@ class SettingsDialog(QDialog):
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.addItem(settings.model)
-        self.timeout = QLineEdit(str(settings.timeout))
+        self.timeout = QLineEdit(f"{settings.timeout / 60:g}")
         self.retries = QLineEdit(str(settings.retries))
+        self.search_model = QLineEdit(settings.search_model)
+        self.polish_model = QLineEdit(settings.polish_model)
+        self.reuse_results = QCheckBox("ใช้ผลเดิมเมื่อ SOURCE / VOCAB / Prompt / Model เหมือนเดิม")
+        self.reuse_results.setChecked(settings.reuse_results)
         self.search_chunks = QComboBox()
         for count in range(1, 21):
             if count == 1:
@@ -257,6 +269,8 @@ class SettingsDialog(QDialog):
         self.test.clicked.connect(self.test_connection)
         self.load_models = QPushButton("Load Models")
         self.load_models.clicked.connect(self.models)
+        self.manage_prompts = QPushButton("Prompt Manager")
+        self.manage_prompts.clicked.connect(parent.prompt_manager)
         self.delete_key = QPushButton("Delete API Key")
         self.delete_key.clicked.connect(self.delete_api_key)
         self.updates = QPushButton("Check for Updates")
@@ -265,10 +279,17 @@ class SettingsDialog(QDialog):
         form.addRow("API Key", self.key)
         form.addRow("Base URL", self.base)
         form.addRow("Default Model", self.model)
-        form.addRow("Timeout (seconds)", self.timeout)
-        form.addRow("Retries", self.retries)
-        form.addRow("แบ่ง SOURCE", self.search_chunks)
-        form.addRow("คำแนะนำ", QLabel("จำนวนช่วงมากขึ้นจะแบ่งละเอียดและส่งหลาย API requests มากขึ้น · 1–20 ช่วง"))
+        advanced = QGroupBox("Advanced")
+        advanced_form = QFormLayout(advanced)
+        advanced_form.addRow("AI response timeout (นาที)", self.timeout)
+        advanced_form.addRow("Automatic retries", self.retries)
+        advanced_form.addRow("Search model (ว่าง = Default)", self.search_model)
+        advanced_form.addRow("Polish model (ว่าง = Default)", self.polish_model)
+        advanced_form.addRow("SOURCE chunks (advanced)", self.search_chunks)
+        advanced_form.addRow("", QLabel("การ retry อาจสร้างค่า API เพิ่ม · 1–20 chunks"))
+        advanced_form.addRow("", self.reuse_results)
+        advanced_form.addRow("", self.manage_prompts)
+        form.addRow(advanced)
         form.addRow("Theme", self.theme)
         form.addRow("ขนาดตัวอักษร", self.font_size)
         form.addRow("", self.startup)
@@ -281,14 +302,27 @@ class SettingsDialog(QDialog):
         form.addRow(row)
 
     def save(self):
+        try:
+            timeout_minutes = float(self.timeout.text())
+            retries = int(self.retries.text())
+            if not 0.5 <= timeout_minutes <= 30:
+                raise ValueError("AI response timeout ต้องอยู่ระหว่าง 0.5–30 นาที (30–1800 วินาที)")
+            if not 0 <= retries <= 10:
+                raise ValueError("Retries ต้องอยู่ระหว่าง 0–10")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Settings ไม่ถูกต้อง", str(exc) or "กรอก timeout และ retries เป็นตัวเลขจำนวนเต็ม")
+            return
         s = self.settings
         s.provider = self.provider.currentText()
         s.credential_name = s.provider
         s.base_url = self.base.text().strip()
         s.model = self.model.currentText().strip()
-        s.timeout = int(self.timeout.text())
-        s.retries = int(self.retries.text())
+        s.timeout = round(timeout_minutes * 60)
+        s.retries = retries
         s.search_chunks = int(self.search_chunks.currentData())
+        s.search_model = self.search_model.text().strip()
+        s.polish_model = self.polish_model.text().strip()
+        s.reuse_results = self.reuse_results.isChecked()
         s.theme = self.theme.currentText()
         s.font_size = int(self.font_size.currentData())
         s.check_updates_on_startup = self.startup.isChecked()
@@ -304,7 +338,7 @@ class SettingsDialog(QDialog):
                 "provider": self.provider.currentText(),
                 "model": self.model.currentText(),
                 "base_url": self.base.text(),
-                "timeout": int(self.timeout.text()),
+                "timeout": round(float(self.timeout.text()) * 60),
             }
         )
         key = self.key.text() or get(s.provider) or ""
@@ -315,7 +349,7 @@ class SettingsDialog(QDialog):
     def test_connection(self):
         try:
             self.provider_obj().test_connection()
-            QMessageBox.information(self, "Connection", "Connection successful")
+            QMessageBox.information(self, "Connection", "Connection successful · Test Connection sent a billable API request")
         except Exception as e:
             QMessageBox.warning(self, "Connection failed", str(e))
 
@@ -457,23 +491,22 @@ class MainWindow(QMainWindow):
             ("Open SOURCE", self.open_source),
             ("Open VOCAB", self.open_vocab),
             ("Settings", self.open_settings),
-            ("Prompt Manager", self.prompt_manager),
             ("History", self.history_dialog),
-            ("Check for Updates", self.check_updates),
         ]:
             b = QPushButton(label)
             b.clicked.connect(fn)
             head.addWidget(b)
         layout.addLayout(head)
+        layout.addWidget(QLabel("1 เตรียม SOURCE / VOCAB  →  2 หาศัพท์  →  3 ตรวจและเกลา  →  Copy / Save"))
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         self.source_view = QPlainTextEdit()
         self.source_view.setPlaceholderText("Open SOURCE file or paste text here")
-        self.tabs.addTab(self.source_view, "1. หาศัพท์")
+        self.tabs.addTab(self.source_view, "1. เตรียม SOURCE")
         self.vocab_view = QPlainTextEdit()
         self.vocab_view.setReadOnly(True)
         self.vocab_view.setPlaceholderText("VOCAB is read only 🔒")
-        self.tabs.addTab(self.vocab_view, "VOCAB · READ ONLY 🔒")
+        self.tabs.addTab(self.vocab_view, "1. VOCAB · READ ONLY 🔒")
         review = QWidget()
         rv = QVBoxLayout(review)
         self.new_table = CopyableTableWidget()
@@ -492,8 +525,8 @@ class MainWindow(QMainWindow):
         for label, fn in [
             ("Select All", lambda: self.select_rows(True)),
             ("Select None", lambda: self.select_rows(False)),
-            ("Run Search", self.run_search),
-            ("Send Selected NEW to Polish", self.run_polish),
+            ("หาศัพท์", self.run_search),
+            ("เกลารายการที่เลือก", self.run_polish),
             ("Copy NEW", lambda: self.copy_table(self.new_table)),
             ("Copy UPDATE", lambda: self.copy_table(self.update_table)),
             ("Copy All", self.copy_all_a),
@@ -502,7 +535,7 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(fn)
             row.addWidget(b)
-            if label in {"Run Search", "Send Selected NEW to Polish", "บันทึกผลรวม"}:
+            if label in {"หาศัพท์", "เกลารายการที่เลือก", "บันทึกผลรวม"}:
                 self.search_action_buttons[label] = b
         rv.addLayout(row)
         rv.addWidget(QLabel("Final Result · CN / TH / SEX / NOTE"))
@@ -517,7 +550,7 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             copy.addWidget(b)
         rv.addLayout(copy)
-        self.tabs.addTab(review, "2–4. ตรวจผล / เกลา / Copy")
+        self.tabs.addTab(review, "2–3. ตรวจ / เกลา / Copy / Save")
         self.setCentralWidget(root)
         self.apply_theme()
         self.results_stale = False
@@ -714,7 +747,7 @@ class MainWindow(QMainWindow):
     def _set_results_stale(self, stale):
         self.results_stale = stale
         self.stale_label.setVisible(stale)
-        polish_button = self.search_action_buttons.get("Send Selected NEW to Polish")
+        polish_button = self.search_action_buttons.get("เกลารายการที่เลือก")
         if polish_button:
             polish_button.setEnabled(not stale)
 
@@ -745,8 +778,8 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Welcome to TermFlow")
         layout = QVBoxLayout(dialog)
         instructions = (
-            "Welcome to TermFlow\n\n1. ตั้งค่า AI Provider\n2. เลือก/เปิด VOCAB\n3. เปิด SOURCE\n"
-            "4. Run Search\n5. Review\n6. Polish\n7. Copy"
+            "Welcome to TermFlow\n\n1. ตั้งค่า AI Provider และเลือก VOCAB / SOURCE\n"
+            "2. หาศัพท์ แล้วตรวจ NEW / UPDATE\n3. เลือกรายการเพื่อเกลา จากนั้น Copy หรือ Save"
         )
         layout.addWidget(QLabel(instructions))
         hide = QCheckBox("Do not show again")
@@ -814,9 +847,11 @@ class MainWindow(QMainWindow):
         return next((x for x in list_prompts() if x["id"] == prompt_id and x["category"] == category), None)
 
     def request(self, step, user_input=""):
-        if not self.settings.model:
+        selected_model = self.settings.model_for_step(step)
+        if not selected_model:
             self.open_settings()
             self.settings = load_settings()
+            selected_model = self.settings.model_for_step(step)
         secret = get(self.settings.provider)
         if not secret:
             QMessageBox.warning(self, "API Key", "ตั้งค่า API Key ก่อนใช้งาน")
@@ -847,7 +882,7 @@ class MainWindow(QMainWindow):
         provider = create_provider(
             ProviderConfig(
                 provider=self.settings.provider,
-                model=self.settings.model,
+                model=selected_model,
                 base_url=self.settings.base_url,
                 timeout=self.settings.timeout,
                 retries=self.settings.retries,
@@ -858,11 +893,38 @@ class MainWindow(QMainWindow):
         self._prompt = prompt
         self._selected_prompt = selected_prompt
         self._request = request
+        self._request_cache_key = cache_key(
+            workflow=f"step-{step}",
+            provider=self.settings.provider,
+            base_url=self.settings.base_url,
+            model=selected_model,
+            prompt=prompt,
+            source=request.source,
+            vocab=request.vocab,
+            user_input=request.user_input,
+            validator_version=f"step-{step}-v1",
+        )
+        if step == "B":
+            expected_rows = [line.split("\t") for line in self._b_input().splitlines()]
+
+            def validator(value):
+                return validate_step_b(value, expected_rows)
+        else:
+            validator = None
+        if self.settings.reuse_results and validator is not None:
+            cached = ResultCache().get(self._request_cache_key, validator)
+            if cached is not None:
+                self._cache_hit = True
+                self.on_response(cached)
+                self.statusBar().showMessage("ใช้ผลเดิมที่ตรวจผ่านแล้ว · ไม่เรียก API")
+                return
+        self._cache_hit = False
         self.statusBar().showMessage("Searching..." if step == "A" else "Polishing...")
         self._provider = provider
         self.start_worker(provider, request)
 
     def start_worker(self, provider, request):
+        self._request_started_at = monotonic()
         self.cancel_button.setVisible(True)
         self._thread = QThread()
         self._worker = Worker(provider, request)
@@ -904,10 +966,10 @@ class MainWindow(QMainWindow):
         if not self.workflow.source.strip():
             QMessageBox.information(self, "หาศัพท์", "เปิด SOURCE หรือวางเนื้อหาก่อนเริ่มค้นหา")
             return
-        if not self.settings.model:
+        if not self.settings.model_for_step("A"):
             self.open_settings()
             self.settings = load_settings()
-        if not self.settings.model:
+        if not self.settings.model_for_step("A"):
             QMessageBox.information(self, "Model", "เลือก Default Model ใน Settings ก่อนเริ่มค้นหา")
             return
         api_key = get(self.settings.provider)
@@ -919,26 +981,45 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Prompt", "ไม่พบ Prompt A ที่เลือก กรุณาเลือก Prompt ใน Prompt Manager")
             return
         try:
+            plan = plan_search(selected_prompt["content"], self.workflow.vocab, self.workflow.source, context_window=128_000)
+        except ValueError as exc:
+            QMessageBox.warning(self, "หาศัพท์", f"คำนวณขนาดคำขอไม่สำเร็จ: {exc}")
+            return
+        chunk_count = max(plan.chunk_count, self.settings.search_chunks)
+        estimated_total = plan.estimated_total_tokens + max(0, chunk_count - plan.chunk_count) * (
+            estimate_tokens(selected_prompt["content"]) + estimate_tokens(self.workflow.vocab) + 256
+        )
+        preview = (
+            f"SOURCE: {len(self.workflow.source):,} characters\n"
+            f"Estimated API requests: {chunk_count}\n"
+            f"Estimated input: ~{estimated_total:,} tokens"
+            + ("\nPrompt และ VOCAB จะถูกส่งซ้ำในแต่ละ request" if chunk_count > 1 else "")
+            + "\n\nเริ่ม Search หรือไม่?"
+        )
+        if QMessageBox.question(self, "Search request preview", preview) != QMessageBox.Yes:
+            return
+        try:
             self.workflow.begin_search()
         except ValueError as exc:
             QMessageBox.warning(self, "หาศัพท์", str(exc))
             return
-        chunk_count = self.settings.search_chunks
         self._search_batch = SearchBatch(split_source(self.workflow.source, count=chunk_count, overlap_units=1))
         self._search_prompt = selected_prompt["content"]
         self._search_selected_prompt = selected_prompt
         self._search_api_key = api_key
         self._search_config = ProviderConfig(
             provider=self.settings.provider,
-            model=self.settings.model,
+            model=self.settings.model_for_step("A"),
             base_url=self.settings.base_url,
             timeout=self.settings.timeout,
             retries=self.settings.retries,
+            reuse_results=self.settings.reuse_results,
         )
         if self.search_progress is None or self.search_progress.chunk_count != chunk_count:
             self.search_progress = SearchProgressDialog(self, chunk_count=chunk_count)
             self.search_progress.cancel_requested.connect(self.cancel_search_batch)
             self.search_progress.retry_requested.connect(self.retry_failed_chunks)
+            self.search_progress.split_requested.connect(self.split_failed_chunk)
         self.search_progress.show()
         self._start_search_worker()
 
@@ -979,9 +1060,63 @@ class MainWindow(QMainWindow):
         failed = [run for run in self._search_batch.runs if run.status == ChunkStatus.FAILED]
         if not failed:
             return
+        answer = QMessageBox.question(
+            self, "ส่งคำขอใหม่", "การลองใหม่จะสร้าง API request ใหม่และอาจมีค่าใช้จ่าย ดำเนินการต่อหรือไม่?"
+        )
+        if answer != QMessageBox.Yes:
+            return
         for run in failed:
             self._search_batch.retry_chunk(run.chunk.index)
         self._search_batch.resume()
+        try:
+            self.workflow.state.transition(State.SEARCH_RUNNING)
+        except ValueError:
+            pass
+        self._start_search_worker()
+
+    def split_failed_chunk(self):
+        if self._search_thread and self._search_thread.isRunning():
+            return
+        failed = next((run for run in self._search_batch.runs if run.status == ChunkStatus.FAILED), None)
+        if failed is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "แบ่ง SOURCE ช่วงที่ล้มเหลว",
+            "ช่วงนี้จะถูกแบ่งเป็นสูงสุด 2 API requests (ผลที่ cache ตรงกันอาจ reuse ได้) และ Prompt กับ VOCAB จะถูกส่งซ้ำในแต่ละ request\n"
+            f"คำขอที่ timeout ไปแล้ว: {failed.request_count} · ดำเนินการต่อหรือไม่?",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        first, second = SearchCoordinator._split_source(failed.chunk.text)
+        if not first.strip() or not second.strip():
+            QMessageBox.warning(self, "แบ่งช่วงไม่ได้", "ช่วงนี้สั้นเกินกว่าจะแบ่งเป็นคำขอที่มีข้อความทั้งสองส่วน")
+            return
+        start = failed.chunk.request_start
+        middle = start + len(first)
+        child_runs = [
+            ChunkRun(SourceChunk(0, start, middle, start, middle, first)),
+            ChunkRun(SourceChunk(0, middle, failed.chunk.request_end, middle, failed.chunk.request_end, second)),
+        ]
+        child_runs[0].request_count = failed.request_count
+        child_runs[0].retry_count = failed.retry_count
+        child_runs[0].attempts = list(failed.attempts)
+        runs = []
+        for run in self._search_batch.runs:
+            if run is failed:
+                runs.extend(child_runs)
+            else:
+                runs.append(run)
+        for index, run in enumerate(runs, 1):
+            run.chunk = replace(run.chunk, index=index)
+        self._search_batch.runs = runs
+        self._search_batch.chunks = tuple(run.chunk for run in runs)
+        self.search_progress.close()
+        self.search_progress = SearchProgressDialog(self, chunk_count=len(runs))
+        self.search_progress.cancel_requested.connect(self.cancel_search_batch)
+        self.search_progress.retry_requested.connect(self.retry_failed_chunks)
+        self.search_progress.split_requested.connect(self.split_failed_chunk)
+        self.search_progress.show()
         try:
             self.workflow.state.transition(State.SEARCH_RUNNING)
         except ValueError:
@@ -1084,13 +1219,27 @@ class MainWindow(QMainWindow):
                         "input_sha256": hashlib.sha256(run.chunk.text.encode("utf-8")).hexdigest(),
                         "status": run.status.value,
                         "retry_count": run.retry_count,
-                        "raw_response": run.raw_response,
+                        "request_count": run.request_count,
+                        "usage": run.usage,
+                        "cache_hit": run.cache_hit,
+                        "duration_seconds": run.duration_seconds,
+                        "raw_response": run.original_response or run.raw_response,
+                        "repaired_response": run.repaired_response,
+                        "origin": run.origin,
                         "parsed_result": {"new": run.new_rows, "update": run.update_rows},
                         "validation_result": {"passed": run.status == ChunkStatus.COMPLETE, "details": run.error},
                         "attempts": run.attempts,
                     }
                     for run in batch.runs
                 ],
+                "api_request_count": sum(run.request_count for run in batch.runs),
+                "usage": {
+                    "input_tokens": sum(run.usage.get("input_tokens") or 0 for run in batch.runs) or None,
+                    "output_tokens": sum(run.usage.get("output_tokens") or 0 for run in batch.runs) or None,
+                },
+                "cache_hit": any(run.cache_hit for run in batch.runs),
+                "duration_seconds": sum(run.duration_seconds for run in batch.runs),
+                "timeout_seconds": self._search_config.timeout,
             }
         save_snapshot(redact(record))
 
@@ -1139,6 +1288,9 @@ class MainWindow(QMainWindow):
 
     def on_response(self, raw):
         self.cancel_button.setVisible(False)
+        original_raw = raw
+        repaired_response = ""
+        self._local_repair_response = ""
         try:
             if self._step == "A":
                 new, updates = self.workflow.accept_search(raw)
@@ -1150,6 +1302,15 @@ class MainWindow(QMainWindow):
                 valid = True
                 self.statusBar().showMessage("Search Complete")
             else:
+                try:
+                    validate_step_b(raw, [line.split("\t") for line in self._b_input().splitlines()])
+                except Exception:
+                    repaired_response = repair_formatting(raw, "B") or ""
+                    if not repaired_response:
+                        raise
+                    validate_step_b(repaired_response, [line.split("\t") for line in self._b_input().splitlines()])
+                    raw = repaired_response
+                    self._local_repair_response = repaired_response
                 final = self.workflow.accept_polish(raw, self._b_input())
                 self.fill_final_table(final)
                 parsed = final
@@ -1159,17 +1320,40 @@ class MainWindow(QMainWindow):
             valid = False
             parsed = []
             self.statusBar().showMessage("Validation Failed")
-            self.save_current_snapshot(raw, {"validation_error": str(e)}, valid)
+            self.save_current_snapshot(original_raw, {"validation_error": str(e)}, valid)
             self.validation_failure(str(e), raw)
             return
-        self.save_current_snapshot(raw, parsed, valid)
+        self.save_current_snapshot(original_raw, parsed, valid)
+        if valid and self.settings.reuse_results and getattr(self, "_request_cache_key", None) and self._step == "B":
+            expected_rows = [line.split("\t") for line in self._b_input().splitlines()]
+
+            def validator(value):
+                return validate_step_b(value, expected_rows)
+
+            secret = get(self.settings.provider) or ""
+            cache_result = repaired_response or raw
+            if not secret or secret not in cache_result:
+                ResultCache().put(self._request_cache_key, cache_result, validator)
 
     def _b_input(self):
         return "\n".join(x.b_input for x in self.workflow.adapted)
 
     def save_current_snapshot(self, raw, parsed, valid):
         input_text = self._request.user_input + self._request.source + self._request.vocab
-        save_snapshot(
+        secret = get(self.settings.provider) or ""
+
+        def redact(value):
+            if isinstance(value, str):
+                return value.replace(secret, "[REDACTED]") if secret else value
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, tuple):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                return {key: redact(item) for key, item in value.items()}
+            return value
+
+        save_snapshot(redact(
             {
                 "source_filename": Path(self.source_path).name if self.source_path else "",
                 "vocab_filename": Path(self.vocab_path).name if self.vocab_path else "",
@@ -1179,13 +1363,19 @@ class MainWindow(QMainWindow):
                 "exact_prompt_text": self._prompt,
                 "prompt_sha256": hashlib.sha256(self._prompt.encode("utf-8")).hexdigest(),
                 "provider": self.settings.provider,
-                "model": self.settings.model,
+                "model": getattr(self._provider, "model", self.settings.model),
                 "input_hash": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
                 "raw_response": raw,
                 "parsed_result": parsed,
                 "validation_result": {"passed": valid, "details": parsed.get("validation_error", "") if isinstance(parsed, dict) else ""},
+                "api_request_count": getattr(self._provider, "request_count", 0),
+                "usage": {"raw": getattr(self._provider, "last_usage", {}), **getattr(self._provider, "normalized_usage", lambda: {})()},
+                "cache_hit": getattr(self, "_cache_hit", False),
+                "duration_seconds": max(0.0, monotonic() - getattr(self, "_request_started_at", monotonic())),
+                "timeout_seconds": self.settings.timeout,
+                "repaired_response": getattr(self, "_local_repair_response", ""),
             }
-        )
+        ))
 
     def on_error(self, msg):
         self.cancel_button.setVisible(False)
@@ -1201,6 +1391,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("Request failed")
         box.setText(f"Reason: {msg}")
+        box.setInformativeText("การลองใหม่จะสร้าง API request ใหม่และอาจมีค่าใช้จ่าย")
         retry = box.addButton("Retry", QMessageBox.AcceptRole)
         box.addButton("Cancel", QMessageBox.RejectRole)
         box.exec()
@@ -1227,7 +1418,7 @@ class MainWindow(QMainWindow):
         self._provider = create_provider(
             ProviderConfig(
                 provider=self.settings.provider,
-                model=self.settings.model,
+                model=self.settings.model_for_step(self._step),
                 base_url=self.settings.base_url,
                 timeout=self.settings.timeout,
                 retries=self.settings.retries,
@@ -1240,7 +1431,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("STRICT VALIDATION FAILED")
         box.setText("AI output did not pass strict validation.")
-        box.setInformativeText(details)
+        box.setInformativeText(f"{details}\n\nการลองใหม่จะสร้าง API request ใหม่และอาจมีค่าใช้จ่าย")
         retry = box.addButton("Retry Same Request", QMessageBox.AcceptRole)
         view = box.addButton("View Raw Response", QMessageBox.ActionRole)
         copy = box.addButton("Copy Raw Response", QMessageBox.ActionRole)

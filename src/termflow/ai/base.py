@@ -12,7 +12,7 @@ class GenerateRequest(BaseModel):
 
 
 class AIProvider(ABC):
-    def __init__(self, api_key: str, model: str, timeout: int = 90, base_url: str = "", retries: int = 0):
+    def __init__(self, api_key: str, model: str, timeout: int = 900, base_url: str = "", retries: int = 0):
         self.api_key, self.model, self.timeout, self.base_url = api_key, model, timeout, base_url
         self.retries = retries
         self.cancelled = Event()
