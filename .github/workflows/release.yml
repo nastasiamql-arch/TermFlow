@@ -43,6 +43,8 @@ jobs:
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'TermFlow-smoke'
           $smoke = Start-Process -FilePath (Resolve-Path dist/TermFlow.exe) -ArgumentList '--check-prompts' -Wait -PassThru
           if ($smoke.ExitCode -ne 0) { throw "Packaged executable smoke test failed: $($smoke.ExitCode)" }
+          $uiSmoke = Start-Process -FilePath (Resolve-Path dist/TermFlow.exe) -ArgumentList '--smoke-ui' -Wait -PassThru
+          if ($uiSmoke.ExitCode -ne 0) { throw "Packaged GUI startup smoke test failed: $($uiSmoke.ExitCode)" }
           $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
           if (!$iscc) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
           & $iscc "/DAppVersion=${{ steps.metadata.outputs.version }}" installer/TermFlow.iss
