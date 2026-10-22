@@ -1,3 +1,4 @@
+"""Prompt-driven HTTP adapters. Never inject workflow-specific output instructions."""
 import httpx
 from pydantic import BaseModel, Field
 
@@ -11,6 +12,7 @@ class ProviderConfig(BaseModel):
     timeout: int = Field(default=900, ge=30, le=1800)
     retries: int = Field(default=0, ge=0, le=10)
     reuse_results: bool = True
+    max_output_tokens: int = Field(default=8192, ge=256, le=65536)
 
 
 class HTTPProvider(AIProvider):
@@ -49,7 +51,6 @@ class HTTPProvider(AIProvider):
                     raise
                 self._wait_before_retry(attempt)
             except httpx.ReadTimeout:
-                # Generation may be billable even when the client times out. Never replay it.
                 raise
             except (httpx.ConnectTimeout, httpx.ConnectError):
                 if attempt >= self.retries:
@@ -58,37 +59,38 @@ class HTTPProvider(AIProvider):
         raise RuntimeError("Request failed after retry limit")
 
     def _wait_before_retry(self, attempt: int) -> None:
-        delay = min(2**attempt, 30)
-        self.cancelled.wait(delay)
+        self.cancelled.wait(min(2**attempt, 30))
         self.check_cancelled()
 
     def _generate_once(self, request: GenerateRequest) -> str:
-        user = "\n\n".join(
-            x
-            for x in (
-                request.user_input,
-                "SOURCE:\n" + request.source if request.source else "",
-                "VOCAB (READ ONLY):\n" + request.vocab if request.vocab else "",
-            )
-            if x
-        )
-        payload = {"model": self.model, "messages": [{"role": "system", "content": request.prompt}, {"role": "user", "content": user}]}
+        # The Prompt is transmitted verbatim as the system instruction.
+        # No injected NEW/UPDATE headers, Polish instructions, or VOCAB.
+        user = "\n\n".join(x for x in (
+            request.user_input,
+            "SOURCE:\n" + request.source if request.source else "",
+            "VOCAB (READ ONLY):\n" + request.vocab if request.vocab else "",
+        ) if x)
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": request.prompt}, {"role": "user", "content": user}],
+            "max_tokens": self.max_output_tokens,
+        }
         if self.kind == "anthropic":
-            payload = {"model": self.model, "max_tokens": 8192, "system": request.prompt, "messages": [{"role": "user", "content": user}]}
+            payload = {
+                "model": self.model, "max_tokens": self.max_output_tokens,
+                "system": request.prompt, "messages": [{"role": "user", "content": user}],
+            }
             url = (self.base_url or "https://api.anthropic.com/v1").rstrip("/") + "/messages"
         elif self.kind == "gemini":
-            url = (self.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip(
-                "/"
-            ) + f"/models/{self.model}:generateContent"
-            payload = {"systemInstruction": {"parts": [{"text": request.prompt}]}, "contents": [{"parts": [{"text": user}]}]}
+            url = (self.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/") + f"/models/{self.model}:generateContent"
+            payload = {
+                "systemInstruction": {"parts": [{"text": request.prompt}]},
+                "contents": [{"parts": [{"text": user}]}],
+                "generationConfig": {"maxOutputTokens": self.max_output_tokens},
+            }
         else:
             url = self.endpoint()
-        timeout = httpx.Timeout(
-            connect=min(float(self.timeout), 30.0),
-            write=60.0,
-            read=float(self.timeout),
-            pool=30.0,
-        )
+        timeout = httpx.Timeout(connect=min(float(self.timeout), 30.0), write=60.0, read=float(self.timeout), pool=30.0)
         with httpx.Client(timeout=timeout) as client:
             self._active_client = client
             headers = self.headers() if self.kind != "gemini" else {"x-goog-api-key": self.api_key}
@@ -103,13 +105,12 @@ class HTTPProvider(AIProvider):
             response.raise_for_status()
             data = response.json()
         self.last_usage = data.get("usageMetadata", {}) if self.kind == "gemini" else data.get("usage", {})
-        self.last_request_meta = {"provider": self.kind, "model": self.model}
         self.finish_reason = self._finish_reason(data)
         try:
             if self.kind == "anthropic":
                 return "".join(x["text"] for x in data["content"] if x.get("type") == "text")
             if self.kind == "gemini":
-                return "".join(x["text"] for x in data["candidates"][0]["content"]["parts"])
+                return "".join(x["text"] for x in data["candidates"][0]["content"]["parts"] if "text" in x)
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError("Provider returned an unsupported response format") from exc
@@ -118,10 +119,8 @@ class HTTPProvider(AIProvider):
         usage = self.last_usage or {}
         if self.kind == "gemini":
             source = {
-                "input_tokens": usage.get("promptTokenCount"),
-                "output_tokens": usage.get("candidatesTokenCount"),
-                "cached_input_tokens": usage.get("cachedContentTokenCount"),
-                "total_tokens": usage.get("totalTokenCount"),
+                "input_tokens": usage.get("promptTokenCount"), "output_tokens": usage.get("candidatesTokenCount"),
+                "cached_input_tokens": usage.get("cachedContentTokenCount"), "total_tokens": usage.get("totalTokenCount"),
             }
         else:
             source = {
@@ -149,13 +148,14 @@ class HTTPProvider(AIProvider):
     def list_models(self) -> list[str]:
         if self.kind not in {"openai", "compatible"}:
             return []
-        base = self.api_v1_base()
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.get(base.rstrip("/") + "/models", headers=self.headers())
+            response = client.get(self.api_v1_base().rstrip("/") + "/models", headers=self.headers())
             response.raise_for_status()
             return sorted(x["id"] for x in response.json().get("data", []))
 
 
 def create_provider(config: ProviderConfig, api_key: str) -> AIProvider:
     cls = type("ConfiguredProvider", (HTTPProvider,), {"kind": config.provider})
-    return cls(api_key, config.model, config.timeout, config.base_url, config.retries)
+    provider = cls(api_key, config.model, config.timeout, config.base_url, config.retries)
+    provider.max_output_tokens = config.max_output_tokens
+    return provider
