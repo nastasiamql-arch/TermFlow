@@ -72,5 +72,42 @@ def validate_v3_output(raw: str, source: str) -> list[list[str]]:
     return rows
 
 
+
+
+def parse_v3_output(raw: str, source: str) -> tuple[list[list[str]], bool]:
+    """Validate V3, repairing only unambiguous presentation wrappers.
+
+    Return (rows, recovered). The original raw reply is never rewritten.
+    Missing closing fences, extra prose and mixed/invalid TSV are never
+    silently repaired because they can indicate lost or changed content.
+    """
+    try:
+        return validate_v3_output(raw, source), False
+    except ValidationError as exc:
+        original_error = exc
+        if not original_error.details[0].startswith("Expected exactly one fenced code block"):
+            raise
+
+    stripped = raw.strip()
+    if not stripped:
+        raise original_error
+    if "```" not in stripped:
+        # Unfenced pure TSV is uniquely reparable if all rows validate.
+        if "\t" not in stripped:
+            raise original_error
+        body = stripped
+    else:
+        # Recognize only equivalent plaintext fence labels, with no extra text.
+        match = re.fullmatch(
+            r"```(?:plain(?:text)?|txt)[ \t]*\r?\n([\s\S]*?)\r?\n```",
+            stripped,
+            re.IGNORECASE,
+        )
+        if not match:
+            raise original_error
+        body = match.group(1)
+    rows = validate_v3_output("```text\n" + body + "\n```", source)
+    return rows, True
+
 def serialize_rows(rows: list[list[str]]) -> str:
     return "\n".join("\t".join(row) for row in rows) + ("\n" if rows else "")

@@ -42,9 +42,9 @@ from termflow.core.history import list_history, save_snapshot
 from termflow.core.prompt_execution import (
     ensure_complete_finish,
     make_request,
+    parse_v3_output,
     serialize_rows,
     snapshot_prompt,
-    validate_v3_output,
 )
 from termflow.core.request_planner import estimate_tokens
 from termflow.core.result_cache import ResultCache, cache_key
@@ -195,6 +195,7 @@ class MainWindow(QMainWindow):
         self.raw = ""
         self.rows = []
         self.valid = False
+        self._format_recovered = False
         self.running = False
         self._thread = None
         self._provider = None
@@ -541,6 +542,7 @@ class MainWindow(QMainWindow):
 
     def invalidate_result(self):
         self.valid = False
+        self._format_recovered = False
         self.rows = []
         self.raw = ""
         if hasattr(self, "raw_view"):
@@ -591,11 +593,11 @@ class MainWindow(QMainWindow):
             self._run_key = cache_key(
                 workflow="prompt-driven-" + mode, provider=self.settings.provider,
                 base_url=self.settings.base_url, model=self.settings.model,
-                prompt=prompt.text, source=source, validator_version="prompt-driven-v2-" + str(reserve),
+                prompt=prompt.text, source=source, validator_version="prompt-driven-v3-" + str(reserve),
             )
             if self.settings.reuse_results:
                 validator = (
-                    (lambda raw: validate_v3_output(raw, source))
+                    (lambda raw: parse_v3_output(raw, source))
                     if prompt.kind == "source-only-v3"
                     else _validate_nonempty
                 )
@@ -645,16 +647,18 @@ class MainWindow(QMainWindow):
         self.raw_view.setPlainText(raw)
         self.rows = []
         self.valid = False
+        self._format_recovered = False
         try:
             ensure_complete_finish(finish_reason)
             if self._prompt_snapshot.kind == "source-only-v3":
-                self.rows = validate_v3_output(raw, self._run_source)
+                self.rows, self._format_recovered = parse_v3_output(raw, self._run_source)
                 self.result_table.setRowCount(len(self.rows))
                 for index, row in enumerate(self.rows):
                     for column, value in enumerate(row):
                         self.result_table.setItem(index, column, QTableWidgetItem(value))
                 self.result_tabs.setCurrentIndex(0 if self._run_mode == "extract" else 1)
-                self.result_info.setText(f"ผ่านการตรวจรูปแบบ · {len(self.rows)} ศัพท์")
+                status = "กู้รูปแบบ TSV ที่ถูกต้องแล้ว" if self._format_recovered else "ผ่านการตรวจรูปแบบ"
+                self.result_info.setText(f"{status} · {len(self.rows)} ศัพท์")
             else:
                 if not raw.strip():
                     raise ValueError("AI returned empty output")
@@ -662,10 +666,11 @@ class MainWindow(QMainWindow):
                 self.result_tabs.setCurrentIndex(1)
                 self.result_info.setText("คำตอบตามไฟล์ Prompt")
             self.valid = True
-            self._set_status("เสร็จแล้ว · ส่งออกผลได้")
+            message = "เสร็จแล้ว · กู้รูปแบบ Code Block โดยไม่เปลี่ยนข้อมูลศัพท์" if self._format_recovered else "เสร็จแล้ว · ส่งออกผลได้"
+            self._set_status(message)
             if finish_reason != "cache" and self.settings.reuse_results:
                 validator = (
-                    (lambda text: validate_v3_output(text, self._run_source))
+                    (lambda text: parse_v3_output(text, self._run_source))
                     if self._prompt_snapshot.kind == "source-only-v3"
                     else _validate_nonempty
                 )
@@ -674,7 +679,11 @@ class MainWindow(QMainWindow):
             self.result_info.setText("ผลลัพธ์ไม่ผ่านการตรวจ")
             self.result_tabs.setCurrentIndex(1)
             self._set_status(f"ไม่ผ่านการตรวจ: {exc}")
-            QMessageBox.warning(self, "ผลลัพธ์ยังไม่สมบูรณ์", str(exc))
+            QMessageBox.warning(
+                self,
+                "ผลลัพธ์ยังไม่สมบูรณ์",
+                f"{exc}\n\nเปิดแท็บ 'คำตอบจาก AI' เพื่อตรวจคำตอบดิบ หรือคัดลอกข้อความออกไปตรวจได้",
+            )
         self._save_run(raw, finish_reason, usage)
 
     def _save_run(self, raw, finish_reason, usage):
@@ -692,7 +701,11 @@ class MainWindow(QMainWindow):
                 "model": self.settings.model,
                 "raw_response": raw,
                 "parsed_result": self.rows if self._prompt_snapshot.kind == "source-only-v3" else raw,
-                "validation_result": {"passed": self.valid, "finish_reason": finish_reason},
+                "validation_result": {
+                    "passed": self.valid,
+                    "finish_reason": finish_reason,
+                    "format_recovered": self._format_recovered,
+                },
                 "usage": usage, "duration_seconds": monotonic() - self._run_started,
             })
         except Exception as exc:
