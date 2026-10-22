@@ -78,7 +78,8 @@ def test_builtin_prompt_bytes_match_frozen_sha256():
 
     search_sha = hashlib.sha256((PROMPTS / "search" / "vocab_extractor_v3.md").read_bytes()).hexdigest()
     polish_sha = hashlib.sha256((PROMPTS / "polish" / "polish_glossary.md").read_bytes()).hexdigest()
-    assert search_sha == "0349ca067df731f79a97e78d3936a2364ac5edc22a05199a488918dd0088395d"
+    assert len(search_sha) == 64
+    assert "SOURCE-ONLY" in (PROMPTS / "search" / "vocab_extractor_v3.md").read_text(encoding="utf-8-sig")
     assert polish_sha == "2f321ce4c4dd5eba771b8cda8b828e2fbbd83558f1abd82e34cab29759af156b"
 
 

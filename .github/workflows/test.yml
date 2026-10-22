@@ -16,3 +16,11 @@ jobs:
       - run: python -m pip install -e . --no-deps
       - run: ruff check src tests
       - run: pytest -q
+      - name: Build and smoke-test executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean TermFlow.spec
+          if (!(Test-Path dist/TermFlow.exe)) { throw "Missing executable" }
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'TermFlow-prompt-smoke'
+          $smoke = Start-Process -FilePath (Resolve-Path dist/TermFlow.exe) -ArgumentList '--check-prompts' -Wait -PassThru
+          if ($smoke.ExitCode -ne 0) { throw "Prompt bundle smoke test failed: $($smoke.ExitCode)" }
