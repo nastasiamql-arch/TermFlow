@@ -178,7 +178,7 @@ class SettingsDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, check_updates=True):
         super().__init__()
         self.setWindowTitle(f"TermFlow {__version__}")
         self.resize(1250, 840)
@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
         self.builtin_prompt = PROMPTS / "search" / "vocab_extractor_v3.md"
         self._load_prompt(str(self.builtin_prompt))
         self._set_status("พร้อมทำงาน")
-        if self.settings.check_updates_on_startup:
+        if check_updates and self.settings.check_updates_on_startup:
             self.check_updates(silent=True)
 
     def _build_ui(self):
@@ -701,10 +701,7 @@ def main():
         # Never contact the network or open dialogs during the packaging smoke.
         app = QApplication(sys.argv)
         app.setApplicationName("TermFlow")
-        from unittest.mock import patch
-
-        with patch("termflow.main.MainWindow.check_updates"):
-            window = MainWindow()
+        window = MainWindow(check_updates=False)
         assert window.source_editor is not None
         assert window.result_table is not None
         window.source_editor.setPlainText("林雪")
