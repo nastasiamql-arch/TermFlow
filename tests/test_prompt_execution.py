@@ -5,6 +5,7 @@ from termflow.core.errors import ValidationError
 from termflow.core.prompt_execution import (
     ensure_complete_finish,
     make_request,
+    parse_v3_output,
     serialize_rows,
     snapshot_prompt,
     validate_v3_output,
@@ -92,3 +93,39 @@ def test_provider_request_source_only_with_configurable_output(monkeypatch):
     assert captured["json"]["messages"][0]["content"] == "Exact"
     assert "VOCAB" not in captured["json"]["messages"][1]["content"]
     assert captured["json"]["max_tokens"] == 20000
+
+
+def test_parser_recovers_unfenced_complete_tsv_without_modifying_cells():
+    raw = "林雪\tหลินเสวี่ย\tหญิง\tตัวละคร\n青云宗\tสำนักชิงอวิ๋น\t-\tชื่อสำนัก"
+    rows, recovered = parse_v3_output(raw, "林雪 青云宗")
+    assert recovered is True
+    assert serialize_rows(rows).rstrip("\n") == raw
+    assert len(rows) == 2
+
+
+def test_parser_accepts_plaintext_fence_and_preserves_values():
+    raw = "```plaintext\n林雪\tหลินเสวี่ย\tหญิง\tตัวละคร\n```"
+    rows, recovered = parse_v3_output(raw, "林雪")
+    assert recovered is True
+    assert rows == [["林雪", "หลินเสวี่ย", "หญิง", "ตัวละคร"]]
+
+
+def test_parser_keeps_correct_v3_response_unchanged():
+    raw = "```text\n林雪\tหลินเสวี่ย\tหญิง\tตัวละคร\n```"
+    rows, recovered = parse_v3_output(raw, "林雪")
+    assert recovered is False
+    assert rows[0][1] == "หลินเสวี่ย"
+
+
+@pytest.mark.parametrize("raw", [
+    "Here is the output:\n林雪\tหลินเสวี่ย\tหญิง\tตัวละคร",
+    "林雪\tหลินเสวี่ย\tหญิง\tตัวละคร\nExplanation:",
+    "```text\n林雪\tหลินเสวี่ย\tหญิง\tตัวละคร",
+    "```text\n林雪\tหลินเสวี่ย\tหญิง\tตัวละคร\n```\nExtra prose",
+    "```text\n林雪\tหลินเสวี่ย\tหญิง\tตัวละคร\n```\n```text\n青云宗\tสำนัก\t-\tชื่อสำนัก\n```",
+    "林雪\tหลินเสวี่ย\tยังไม่ยืนยัน\tตัวละคร",
+    "不存在\tชื่อที่ไม่มี\t-\tผิด",
+])
+def test_parser_rejects_ambiguous_incomplete_or_semantically_invalid_tsv(raw):
+    with pytest.raises(ValidationError):
+        parse_v3_output(raw, "林雪 青云宗")
