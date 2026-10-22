@@ -17,6 +17,7 @@ class ProviderConfig(BaseModel):
 
 class HTTPProvider(AIProvider):
     kind = "openai"
+    max_output_tokens = 8192
 
     def endpoint(self) -> str:
         return self.api_v1_base() + "/chat/completions"
