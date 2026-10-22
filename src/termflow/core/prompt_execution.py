@@ -83,7 +83,8 @@ def parse_v3_output(raw: str, source: str) -> tuple[list[list[str]], bool]:
     """
     try:
         return validate_v3_output(raw, source), False
-    except ValidationError as original_error:
+    except ValidationError as exc:
+        original_error = exc
         if not original_error.details[0].startswith("Expected exactly one fenced code block"):
             raise
 
