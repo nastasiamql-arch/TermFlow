@@ -36,7 +36,10 @@ def test_empty_or_invalid_chapters_are_not_silently_skipped(tmp_path):
         join_chapters(find_chapters(tmp_path))
 
 
-def test_gui_chapter_selection_and_range(tmp_path, qapp, monkeypatch):
+def test_gui_chapter_selection_and_range(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    qapp = QApplication.instance() or QApplication([])
     from termflow import main as app_main
     from termflow.storage.settings import Settings
 
