@@ -269,10 +269,10 @@ class MainWindow(QMainWindow):
         source_open.clicked.connect(self.open_source)
         source_head.addWidget(source_open)
         clear_source = QPushButton("ล้าง")
-        clear_source.clicked.connect(self.source_editor.clear)
         source_head.addWidget(clear_source)
         source_layout.addLayout(source_head)
         self.source_editor = QPlainTextEdit()
+        clear_source.clicked.connect(self.source_editor.clear)
         self.source_editor.setPlaceholderText("เปิดไฟล์ .txt/.md หรือวางข้อความนิยายจีนที่นี่...")
         self.source_editor.textChanged.connect(self.invalidate_result)
         source_layout.addWidget(self.source_editor)
@@ -696,6 +696,24 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if "--smoke-ui" in sys.argv:
+        # Exercise the actual GUI startup, not only the bundled prompt parser.
+        # Never contact the network or open dialogs during the packaging smoke.
+        app = QApplication(sys.argv)
+        app.setApplicationName("TermFlow")
+        from unittest.mock import patch
+
+        with patch("termflow.main.MainWindow.check_updates"):
+            window = MainWindow()
+        assert window.source_editor is not None
+        assert window.result_table is not None
+        window.source_editor.setPlainText("林雪")
+        window.source_editor.clear()
+        window.mode.setCurrentIndex(1)
+        window.mode.setCurrentIndex(0)
+        window.close()
+        app.quit()
+        return
     if "--check-prompts" in sys.argv:
         prompt = PROMPTS / "search" / "vocab_extractor_v3.md"
         try:

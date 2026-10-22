@@ -24,3 +24,5 @@ jobs:
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'TermFlow-prompt-smoke'
           $smoke = Start-Process -FilePath (Resolve-Path dist/TermFlow.exe) -ArgumentList '--check-prompts' -Wait -PassThru
           if ($smoke.ExitCode -ne 0) { throw "Prompt bundle smoke test failed: $($smoke.ExitCode)" }
+          $uiSmoke = Start-Process -FilePath (Resolve-Path dist/TermFlow.exe) -ArgumentList '--smoke-ui' -Wait -PassThru
+          if ($uiSmoke.ExitCode -ne 0) { throw "Packaged GUI startup smoke test failed: $($uiSmoke.ExitCode)" }
