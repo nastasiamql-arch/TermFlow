@@ -1,8 +1,9 @@
+import os
+from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 from termflow.storage.paths import APPDATA
-import os
-from pathlib import Path
 
 
 class Settings(BaseModel):

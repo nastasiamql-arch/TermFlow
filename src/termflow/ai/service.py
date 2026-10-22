@@ -83,7 +83,8 @@ class HTTPProvider(AIProvider):
             }
             url = (self.base_url or "https://api.anthropic.com/v1").rstrip("/") + "/messages"
         elif self.kind == "gemini":
-            url = (self.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/") + f"/models/{self.model}:generateContent"
+            base = (self.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+            url = base + f"/models/{self.model}:generateContent"
             payload = {
                 "systemInstruction": {"parts": [{"text": request.prompt}]},
                 "contents": [{"parts": [{"text": user}]}],

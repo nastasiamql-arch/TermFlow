@@ -9,19 +9,38 @@ from threading import Event
 from time import monotonic
 
 import httpx
-from PySide6.QtCore import QObject, Qt, QThread, Signal, QUrl
+from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QSplitter, QTabWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from termflow.ai.service import ProviderConfig, create_provider
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.prompt_execution import (
-    ensure_complete_finish, make_request, serialize_rows, snapshot_prompt, validate_v3_output,
+    ensure_complete_finish,
+    make_request,
+    serialize_rows,
+    snapshot_prompt,
+    validate_v3_output,
 )
 from termflow.core.request_planner import estimate_tokens
 from termflow.core.result_cache import ResultCache, cache_key
@@ -33,6 +52,12 @@ from termflow.updater.github_releases import latest_release
 from termflow.updater.installer import launch_installer
 from termflow.updater.version_check import is_newer
 from termflow.version import __version__
+
+
+def _validate_nonempty(raw: str) -> str:
+    if not raw.strip():
+        raise ValueError("Empty model response")
+    return raw
 
 
 class GenerateWorker(QObject):
@@ -325,7 +350,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "เปิด Prompt ไม่สำเร็จ", str(exc))
 
     def open_prompt(self):
-        path, _ = QFileDialog.getOpenFileName(self, "เลือกไฟล์ Prompt", str(Path(self.prompt_path).parent), "Prompt (*.md *.txt);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "เลือกไฟล์ Prompt", str(Path(self.prompt_path).parent), "Prompt (*.md *.txt);;All files (*)"
+        )
         if path:
             self._load_prompt(path)
 
@@ -410,7 +437,11 @@ class MainWindow(QMainWindow):
                 prompt=prompt.text, source=source, validator_version="prompt-driven-v2-" + str(reserve),
             )
             if self.settings.reuse_results:
-                validator = (lambda raw: validate_v3_output(raw, source)) if prompt.kind == "source-only-v3" else (lambda raw: bool(raw.strip()) or (_ for _ in ()).throw(ValueError("Empty response")))
+                validator = (
+                    (lambda raw: validate_v3_output(raw, source))
+                    if prompt.kind == "source-only-v3"
+                    else _validate_nonempty
+                )
                 cached = ResultCache().get(self._run_key, validator)
                 if cached is not None:
                     self.on_result(cached, "cache", {})
@@ -470,7 +501,12 @@ class MainWindow(QMainWindow):
             self.valid = True
             self._set_status("เสร็จแล้ว · ส่งออกผลได้")
             if finish_reason != "cache" and self.settings.reuse_results:
-                ResultCache().put(self._run_key, raw, lambda x: validate_v3_output(x, self._run_source) if self._prompt_snapshot.kind == "source-only-v3" else bool(x.strip()) or (_ for _ in ()).throw(ValueError("Empty")))
+                validator = (
+                    (lambda text: validate_v3_output(text, self._run_source))
+                    if self._prompt_snapshot.kind == "source-only-v3"
+                    else _validate_nonempty
+                )
+                ResultCache().put(self._run_key, raw, validator)
         except Exception as exc:
             self.result_info.setText("ผลลัพธ์ไม่ผ่านการตรวจ")
             self.result_tabs.setCurrentIndex(1)
@@ -571,7 +607,11 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(dialog)
         chooser = QComboBox()
         for record in entries[:100]:
-            chooser.addItem(f"{record.get('timestamp', '')} · {record.get('mode', record.get('workflow', 'legacy'))} · {record.get('model', '')}", record)
+            label = (
+                f"{record.get('timestamp', '')} · "
+                f"{record.get('mode', record.get('workflow', 'legacy'))} · {record.get('model', '')}"
+            )
+            chooser.addItem(label, record)
         view = QPlainTextEdit()
         view.setReadOnly(True)
         def display(index):
@@ -638,7 +678,8 @@ class MainWindow(QMainWindow):
 
     def on_download_done(self, data):
         path, digest = data.split("|", 1)
-        if QMessageBox.question(self, "ติดตั้งอัปเดต", f"ดาวน์โหลดและตรวจ SHA-256 แล้ว\n{digest}\n\nปิด TermFlow แล้วเปิดตัวติดตั้งหรือไม่?") == QMessageBox.Yes:
+        question = f"ดาวน์โหลดและตรวจ SHA-256 แล้ว\n{digest}\n\nปิด TermFlow แล้วเปิดตัวติดตั้งหรือไม่?"
+        if QMessageBox.question(self, "ติดตั้งอัปเดต", question) == QMessageBox.Yes:
             try:
                 launch_installer(Path(path))
                 QApplication.quit()
