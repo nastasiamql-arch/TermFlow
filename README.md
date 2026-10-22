@@ -48,3 +48,7 @@ No automatic writes to SOURCE, prompt files or vocabulary data. Save refuses to 
 ## Release process
 
 Bump `src/termflow/version.py`, `pyproject.toml` and `installer/TermFlow.iss` together. Run CI, then push an annotated tag matching the app version, e.g. `v1.2.0`. The release workflow tests, builds Windows installer, generates SHA-256 and publishes the release.
+
+## Folder-based chapter selection (1.3.0)
+
+Click **เลือกโฟลเดอร์** to scan the directory for .txt, .md and numeric extensionless chapter files (non-recursive). A left sidebar lists chapters in natural numeric order: 0001, 0002, 0010, etc. Tick individual chapters, use **ทั้งหมด / ไม่เลือก**, or enter list positions **จาก / ถึง** and click **เลือกช่วงบท**. The app shows a preview of the combined SOURCE, including chapter boundary labels. On Run, it re-reads every selected file and stops with an error if any selected file is unreadable/empty. It sends only the checked chapters in one request, not one request per chapter. The SOURCE and Prompt originals remain read-only; individual files can also be opened and pasted text can still be used. Large combined requests are stopped by the existing token-budget check rather than silently truncated/split.

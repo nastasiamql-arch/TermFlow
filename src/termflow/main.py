@@ -21,6 +21,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QSpinBox,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -34,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from termflow.ai.service import ProviderConfig, create_provider
+from termflow.core.chapters import find_chapters, join_chapters
 from termflow.core.history import list_history, save_snapshot
 from termflow.core.prompt_execution import (
     ensure_complete_finish,
@@ -185,6 +189,9 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.prompt_path = ""
         self.source_path = ""
+        self.chapter_folder = None
+        self.chapter_files = []
+        self._source_from_chapters = False
         self.raw = ""
         self.rows = []
         self.valid = False
@@ -256,6 +263,53 @@ class MainWindow(QMainWindow):
         self.prompt_info = QLabel("")
         self.prompt_info.setStyleSheet("color: #89929d; font-size: 11px;")
         layout.addWidget(self.prompt_info)
+        workspace = QSplitter(Qt.Horizontal)
+        chapter_panel = QWidget()
+        chapter_layout = QVBoxLayout(chapter_panel)
+        chapter_layout.setContentsMargins(0, 0, 0, 0)
+        chapter_layout.addWidget(QLabel("เลือกบทนิยาย"))
+        folder_row = QHBoxLayout()
+        self.folder_button = QPushButton("เลือกโฟลเดอร์")
+        self.folder_button.clicked.connect(self.open_chapter_folder)
+        folder_row.addWidget(self.folder_button)
+        self.refresh_button = QPushButton("รีเฟรช")
+        self.refresh_button.clicked.connect(self.refresh_chapters)
+        folder_row.addWidget(self.refresh_button)
+        chapter_layout.addLayout(folder_row)
+        self.folder_label = QLabel("ยังไม่ได้เลือกโฟลเดอร์")
+        self.folder_label.setWordWrap(True)
+        chapter_layout.addWidget(self.folder_label)
+        self.chapter_list = QListWidget()
+        self.chapter_list.itemChanged.connect(self._chapter_check_changed)
+        chapter_layout.addWidget(self.chapter_list, 1)
+        chapter_actions = QHBoxLayout()
+        choose_all = QPushButton("ทั้งหมด")
+        choose_all.clicked.connect(lambda: self.set_all_chapters(True))
+        choose_none = QPushButton("ไม่เลือก")
+        choose_none.clicked.connect(lambda: self.set_all_chapters(False))
+        chapter_actions.addWidget(choose_all)
+        chapter_actions.addWidget(choose_none)
+        chapter_layout.addLayout(chapter_actions)
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("จาก"))
+        self.first_chapter = QSpinBox()
+        self.first_chapter.setMinimum(1)
+        self.first_chapter.setMaximum(1)
+        range_row.addWidget(self.first_chapter)
+        range_row.addWidget(QLabel("ถึง"))
+        self.last_chapter = QSpinBox()
+        self.last_chapter.setMinimum(1)
+        self.last_chapter.setMaximum(1)
+        range_row.addWidget(self.last_chapter)
+        chapter_layout.addLayout(range_row)
+        select_range = QPushButton("เลือกช่วงบท")
+        select_range.clicked.connect(self.select_chapter_range)
+        chapter_layout.addWidget(select_range)
+        self.chapter_summary = QLabel("เลือก 0 บท")
+        self.chapter_summary.setWordWrap(True)
+        chapter_layout.addWidget(self.chapter_summary)
+        workspace.addWidget(chapter_panel)
+
         splitter = QSplitter(Qt.Vertical)
         source_panel = QWidget()
         source_layout = QVBoxLayout(source_panel)
@@ -274,7 +328,7 @@ class MainWindow(QMainWindow):
         self.source_editor = QPlainTextEdit()
         clear_source.clicked.connect(self.source_editor.clear)
         self.source_editor.setPlaceholderText("เปิดไฟล์ .txt/.md หรือวางข้อความนิยายจีนที่นี่...")
-        self.source_editor.textChanged.connect(self.invalidate_result)
+        self.source_editor.textChanged.connect(self._manual_source_changed)
         source_layout.addWidget(self.source_editor)
         splitter.addWidget(source_panel)
 
@@ -312,7 +366,9 @@ class MainWindow(QMainWindow):
         result_layout.addLayout(actions)
         splitter.addWidget(result_panel)
         splitter.setSizes([310, 430])
-        layout.addWidget(splitter, 1)
+        workspace.addWidget(splitter)
+        workspace.setSizes([290, 900])
+        layout.addWidget(workspace, 1)
 
         bottom = QHBoxLayout()
         self.status_label = QLabel("พร้อมทำงาน")
@@ -371,6 +427,96 @@ class MainWindow(QMainWindow):
         v.addWidget(view)
         dialog.exec()
 
+    def _manual_source_changed(self):
+        if self._source_from_chapters:
+            self._source_from_chapters = False
+            self.chapter_summary.setText(self.chapter_summary.text() + " · SOURCE ถูกแก้ไขด้วยมือ")
+        self.invalidate_result()
+
+    def open_chapter_folder(self):
+        initial = str(self.chapter_folder) if self.chapter_folder else ""
+        folder = QFileDialog.getExistingDirectory(self, "เลือกโฟลเดอร์นิยาย", initial)
+        if folder:
+            self.chapter_folder = Path(folder)
+            self.refresh_chapters()
+
+    def refresh_chapters(self):
+        if not self.chapter_folder or self.running:
+            return
+        try:
+            old_names = {
+                item.data(Qt.UserRole).name
+                for i in range(self.chapter_list.count())
+                if (item := self.chapter_list.item(i)).checkState() == Qt.Checked
+            }
+            old_had_items = self.chapter_list.count() > 0
+            self.chapter_files = find_chapters(self.chapter_folder)
+            self.chapter_list.blockSignals(True)
+            self.chapter_list.clear()
+            for chapter in self.chapter_files:
+                item = QListWidgetItem(chapter.name)
+                item.setData(Qt.UserRole, chapter.path)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if old_had_items and chapter.name in old_names else Qt.Unchecked)
+                self.chapter_list.addItem(item)
+            self.chapter_list.blockSignals(False)
+            self.folder_label.setText(str(self.chapter_folder))
+            count = len(self.chapter_files)
+            self.first_chapter.setMaximum(max(1, count))
+            self.last_chapter.setMaximum(max(1, count))
+            self.last_chapter.setValue(max(1, count))
+            self._chapter_check_changed()
+        except Exception as exc:
+            self.chapter_list.blockSignals(False)
+            QMessageBox.warning(self, "โหลดโฟลเดอร์ไม่สำเร็จ", str(exc))
+
+    def selected_chapters(self):
+        selected = {
+            self.chapter_list.item(i).data(Qt.UserRole)
+            for i in range(self.chapter_list.count())
+            if self.chapter_list.item(i).checkState() == Qt.Checked
+        }
+        return [chapter for chapter in self.chapter_files if chapter.path in selected]
+
+    def _chapter_check_changed(self, *_args):
+        selected = self.selected_chapters()
+        total = len(self.chapter_files)
+        self.chapter_summary.setText(f"เลือก {len(selected)}/{total} บท · เรียงตามหมายเลขบท")
+        if selected:
+            try:
+                source = join_chapters(selected)
+                self._source_from_chapters = True
+                self.source_editor.blockSignals(True)
+                self.source_editor.setPlainText(source)
+                self.source_editor.blockSignals(False)
+                self.source_path = ""
+                self.source_meta.setText(f"{len(selected)} บท · {len(source):,} อักษร")
+                self.invalidate_result()
+            except Exception as exc:
+                self.source_editor.blockSignals(False)
+                self._source_from_chapters = False
+                self.source_editor.clear()
+                QMessageBox.warning(self, "อ่านบทนิยายไม่สำเร็จ", str(exc))
+        elif self._source_from_chapters:
+            self._source_from_chapters = False
+            self.source_editor.clear()
+            self.source_meta.setText("ยังไม่ได้เลือกบท")
+
+    def set_all_chapters(self, checked):
+        self.chapter_list.blockSignals(True)
+        for i in range(self.chapter_list.count()):
+            self.chapter_list.item(i).setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self.chapter_list.blockSignals(False)
+        self._chapter_check_changed()
+
+    def select_chapter_range(self):
+        first, last = sorted((self.first_chapter.value(), self.last_chapter.value()))
+        self.chapter_list.blockSignals(True)
+        for i in range(self.chapter_list.count()):
+            self.chapter_list.item(i).setCheckState(Qt.Checked if first <= i + 1 <= last else Qt.Unchecked)
+        self.chapter_list.blockSignals(False)
+        self._chapter_check_changed()
+
     def open_source(self):
         path, _ = QFileDialog.getOpenFileName(self, "เปิด SOURCE", "", "Novel text (*.txt *.md);;All files (*)")
         if not path:
@@ -378,6 +524,11 @@ class MainWindow(QMainWindow):
         try:
             data = Path(path).read_bytes().decode("utf-8-sig")
             self.source_path = path
+            self._source_from_chapters = False
+            self.chapter_list.blockSignals(True)
+            for i in range(self.chapter_list.count()):
+                self.chapter_list.item(i).setCheckState(Qt.Unchecked)
+            self.chapter_list.blockSignals(False)
             self.source_editor.setPlainText(data)
             self.source_meta.setText(f"{Path(path).name} · {len(data):,} อักษร")
         except Exception as exc:
@@ -410,6 +561,12 @@ class MainWindow(QMainWindow):
         try:
             prompt = snapshot_prompt(Path(self.prompt_path).read_bytes().decode("utf-8-sig"))
             source = self.source_editor.toPlainText()
+            # Re-read selected files immediately before each run; no stale preview or silent file changes.
+            if self._source_from_chapters:
+                source = join_chapters(self.selected_chapters())
+                self.source_editor.blockSignals(True)
+                self.source_editor.setPlainText(source)
+                self.source_editor.blockSignals(False)
             request = make_request(prompt, source)
             if not self.settings.model:
                 raise ValueError("กรุณาตั้งค่า Model ID ก่อนเริ่มงาน")
@@ -455,6 +612,9 @@ class MainWindow(QMainWindow):
             )
             self.running = True
             self.run_button.setEnabled(False)
+            self.folder_button.setEnabled(False)
+            self.refresh_button.setEnabled(False)
+            self.chapter_list.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self._set_status("กำลังส่ง Prompt และ SOURCE ไปยัง AI…")
             self._thread = QThread()
@@ -474,6 +634,9 @@ class MainWindow(QMainWindow):
     def _finish_run(self):
         self.running = False
         self.run_button.setEnabled(True)
+        self.folder_button.setEnabled(True)
+        self.refresh_button.setEnabled(True)
+        self.chapter_list.setEnabled(True)
         self.cancel_button.setEnabled(False)
 
     def on_result(self, raw, finish_reason, usage):
@@ -523,6 +686,7 @@ class MainWindow(QMainWindow):
                 "exact_prompt_text": self._prompt_snapshot.text,
                 "prompt_sha256": self._prompt_snapshot.digest,
                 "source_filename": Path(self.source_path).name if self.source_path else "",
+                "chapter_files": [c.name for c in self.selected_chapters()] if self._source_from_chapters else [],
                 "source_hash": hashlib.sha256(self._run_source.encode()).hexdigest(),
                 "provider": self.settings.provider,
                 "model": self.settings.model,
@@ -706,6 +870,7 @@ def main():
         assert window.result_table is not None
         window.source_editor.setPlainText("林雪")
         window.source_editor.clear()
+        assert window.chapter_list is not None
         window.mode.setCurrentIndex(1)
         window.mode.setCurrentIndex(0)
         window.close()
